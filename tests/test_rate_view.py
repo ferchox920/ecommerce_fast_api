@@ -144,3 +144,13 @@ async def test_rate_view_pipeline(client: AsyncClient, admin_token: str, user_to
     analytics = analytics_resp.json()
     assert "kpis" in analytics
 
+    dashboard_resp = await client.get(
+        "/api/v1/admin/analytics/dashboard",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert dashboard_resp.status_code == 200
+    dashboard = dashboard_resp.json()
+    assert "sales" in dashboard
+    assert "inventory" in dashboard
+    assert "operations" in dashboard
+

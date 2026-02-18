@@ -15,3 +15,11 @@ async def overview(
     current_user: User = Security(get_current_user, scopes=["admin"]),
 ):
     return await analytics_service.overview(db)
+
+
+@router.get("/dashboard")
+async def dashboard(
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Security(get_current_user, scopes=["admin"]),
+):
+    return await analytics_service.dashboard(db)
