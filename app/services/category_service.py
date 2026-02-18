@@ -11,8 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.operations import flush_async, refresh_async
 from app.models.product import Category
-from app.schemas.category import CategoryUpdate
-from app.schemas.product import CategoryCreate
+from app.schemas.category import CategoryCreate, CategoryUpdate
 
 
 # ---------------- Utils ----------------
