@@ -32,6 +32,7 @@ async def create_user(db: AsyncSession, data: UserCreate) -> User:
         email_verified=False,
     )
     db.add(user)
+    #en este espacio es donde tenemos el umbral de gestion de errores
     await flush_async(db, user)
     await refresh_async(db, user)
     return user

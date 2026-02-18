@@ -15,8 +15,18 @@ from app.services import notification_service
 from app.services.event_bus import emit_promotion_event
 
 
+def _ensure_aware(value: datetime | None, fallback: datetime) -> datetime:
+    if value is None:
+        return fallback
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _is_time_active(promotion: Promotion, now: datetime) -> bool:
-    return promotion.start_at <= now <= promotion.end_at
+    start_at = _ensure_aware(promotion.start_at, datetime.min.replace(tzinfo=timezone.utc))
+    end_at = _ensure_aware(promotion.end_at, datetime.max.replace(tzinfo=timezone.utc))
+    return start_at <= now <= end_at
 
 
 async def create_promotion(db: AsyncSession, payload: PromotionCreate) -> Promotion:

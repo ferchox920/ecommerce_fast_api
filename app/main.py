@@ -1,6 +1,6 @@
-﻿import logging  # <-- Importar logging
+import logging  # <-- Importar logging
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
@@ -11,6 +11,7 @@ from app.core.logging import setup_logging
 from app.core.metrics import export_metrics
 from app.api.routers import (
     admin,
+    admin_product_questions,
     admin_promotions,
     analytics,
     auth,
@@ -33,6 +34,7 @@ from app.api.routers import (
     variants,
     wishes,
 )
+from app.api.ws import notifications as ws_notifications
 from app.middleware import ObservabilityMiddleware, PayloadLimitMiddleware, SecurityHeadersMiddleware
 from app.initial_data import create_initial_admin_user  # <-- Importar
 
@@ -53,7 +55,7 @@ import app.models.wish              # noqa: F401
 import app.models.user              # noqa: F401
 
 
-# --- Metadatos de la API para la documentación ---
+# --- Metadatos de la API para la documentacion ---
 TAGS_METADATA = [
     {"name": "auth", "description": "Autenticacion, tokens y gestion de sesiones."},
     {"name": "users", "description": "Operaciones del perfil de usuario."},
@@ -84,7 +86,7 @@ setup_logging() # Configura el logging globalmente
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger = logging.getLogger("app.lifespan")
-    logger.info("Startup: preparando inicializaciones…")
+    logger.info("Startup: preparando inicializacionesa")
     try:
         await create_initial_admin_user()
     except Exception as e:
@@ -96,18 +98,18 @@ async def lifespan(app: FastAPI):
 
 
 
-# Crear la instancia de la aplicación FastAPI
+# Crear la instancia de la aplicacion FastAPI
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version="0.1.0",
     description=(
         "API de E-Commerce modular y escalable.\n\n"
-        "- **Auth**: Login, refresh tokens y verificación de email.\n"
-        "- **Users**: Gestión de perfiles de usuario.\n"
-        "- **Products**: Catálogo completo con variantes, imágenes y filtros.\n"
-        "- **Purchases**: Ciclo de abastecimiento con proveedores y órdenes de compra.\n"
+        "- **Auth**: Login, refresh tokens y verificacion de email.\n"
+        "- **Users**: Gestion de perfiles de usuario.\n"
+        "- **Products**: CatAlogo completo con variantes, imAgenes y filtros.\n"
+        "- **Purchases**: Ciclo de abastecimiento con proveedores y Ordenes de compra.\n"
         "- **Reports**: Metricas de negocio basadas en el historial de ventas.\n\n"
-        "Usa el botón **Authorize** para probar los endpoints protegidos."
+        "Usa el boton **Authorize** para probar los endpoints protegidos."
     ),
     openapi_tags=TAGS_METADATA,
     docs_url="/docs",
@@ -127,22 +129,23 @@ register_exception_handlers(app)
 # --- Middlewares ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ajustar en producción para mayor seguridad
+    allow_origins=["*"],  # Ajustar en produccion para mayor seguridad
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(PayloadLimitMiddleware) # Limita tamaño del payload
-app.add_middleware(ObservabilityMiddleware) # Añade métricas y tracing
-app.add_middleware(SecurityHeadersMiddleware) # Añade cabeceras de seguridad
+app.add_middleware(PayloadLimitMiddleware) # Limita tamaAo del payload
+app.add_middleware(ObservabilityMiddleware) # AAade metricas y tracing
+app.add_middleware(SecurityHeadersMiddleware) # AAade cabeceras de seguridad
 
 # --- Routers ---
-# Incluir todos los routers de los diferentes módulos de la API
+# Incluir todos los routers de los diferentes modulos de la API
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(users.router, prefix=settings.API_V1_STR)
 app.include_router(admin.router, prefix=settings.API_V1_STR)
 app.include_router(admin_promotions.router, prefix=settings.API_V1_STR)
 app.include_router(categories.router, prefix=settings.API_V1_STR)
+app.include_router(categories.admin_router, prefix=settings.API_V1_STR)
 app.include_router(brands.router, prefix=settings.API_V1_STR)
 app.include_router(engagement.router, prefix=settings.API_V1_STR)
 app.include_router(exposure.router, prefix=settings.API_V1_STR)
@@ -150,6 +153,7 @@ app.include_router(cart.router, prefix=settings.API_V1_STR)
 app.include_router(products.router, prefix=settings.API_V1_STR)
 app.include_router(variants.router, prefix=settings.API_V1_STR)
 app.include_router(product_questions.router, prefix=settings.API_V1_STR)
+app.include_router(admin_product_questions.router, prefix=settings.API_V1_STR)
 app.include_router(promotions.router, prefix=settings.API_V1_STR)
 app.include_router(payments.router, prefix=settings.API_V1_STR)
 app.include_router(loyalty.router, prefix=settings.API_V1_STR)
@@ -157,13 +161,14 @@ app.include_router(purchases.router, prefix=settings.API_V1_STR)
 app.include_router(orders.router, prefix=settings.API_V1_STR)
 app.include_router(scoring.router, prefix=settings.API_V1_STR)
 app.include_router(notifications.router, prefix=settings.API_V1_STR)
+app.include_router(ws_notifications.router, prefix=settings.API_V1_STR)
 app.include_router(analytics.router, prefix=settings.API_V1_STR)
 app.include_router(reports.router, prefix=settings.API_V1_STR)
 app.include_router(wishes.router, prefix=settings.API_V1_STR)
 
 
-# --- Configuración personalizada de OpenAPI ---
-# (Se usa para añadir logo, configurar autenticación Bearer por defecto, etc.)
+# --- Configuracion personalizada de OpenAPI ---
+# (Se usa para anadir logo, configurar autenticacion Bearer por defecto, etc.)
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -180,34 +185,43 @@ def custom_openapi():
         "url": "https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png"
     }
 
-    # Configuración del esquema de seguridad Bearer JWT
+    # Configuracion del esquema de seguridad Bearer JWT
     comps = openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})
     comps["BearerAuth"] = {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "Pega tu access token aquí. Formato: `Bearer <token>`",
+        "description": "Pega tu access token aquA. Formato: `Bearer <token>`",
     }
     
-    # Define que los endpoints usarán BearerAuth por defecto
+    # Define que los endpoints usarAn BearerAuth por defecto
     openapi_schema["security"] = [{"BearerAuth": []}]
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
-app.openapi = custom_openapi # Aplica la configuración personalizada
+app.openapi = custom_openapi  # Aplica la configuracion personalizada
 
 
-# --- Endpoints raíz y de métricas ---
+# --- Endpoints raiz y de metricas ---
 @app.get("/", include_in_schema=False)
 def root():
-    """Endpoint raíz para verificar el estado."""
+    """Endpoint raiz para verificar el estado."""
     return {"status": "ok", "docs_url": "/docs", "redoc_url": "/redoc"}
+
+
+@app.websocket(f"{settings.API_V1_STR}/_ws_echo")
+async def ws_echo(websocket: WebSocket) -> None:
+    await websocket.accept()
+    await websocket.send_json({"ok": True})
+    await websocket.close(code=1000, reason="ok")
 
 
 @app.get("/metrics", include_in_schema=False)
 def metrics(_: None = Depends(get_current_admin)) -> Response:
-    """Endpoint para exportar métricas de Prometheus (protegido por admin)."""
+    """Endpoint para exportar metricas de Prometheus (protegido por admin)."""
     payload, content_type = export_metrics()
     return Response(content=payload, media_type=content_type)
+
+
 

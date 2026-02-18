@@ -58,7 +58,8 @@ async def create_cart(
     payload: CartCreate,
     user_id: str | None = None,
 ) -> Cart:
-    guest_token = payload.guest_token
+    # Authenticated users should never reuse the guest token field to avoid UNIQUE conflicts.
+    guest_token = None if user_id else payload.guest_token
 
     if not user_id and not guest_token:
         guest_token = str(uuid.uuid4())

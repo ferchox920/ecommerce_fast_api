@@ -39,11 +39,14 @@ async def register_user(
     db: AsyncSession = Depends(get_async_db),
 ):
     existing = await get_by_email(db, data.email)
+
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
+
     user = await create_user(db, data)
     await commit_async(db)
     return user
+
 
 
 @router.put("/me", response_model=UserRead)

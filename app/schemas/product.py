@@ -2,24 +2,9 @@ from uuid import UUID
 from typing import Optional, List
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict
 from datetime import datetime  # <-- NUEVO
-# --- Category / Brand ---
-class CategoryCreate(BaseModel):
-    name: str
-    slug: str | None = None  # opcional
 
-class CategoryRead(CategoryCreate):
-    id: UUID
-    active: bool = True
-    model_config = ConfigDict(from_attributes=True)
-
-class BrandCreate(BaseModel):
-    name: str
-    slug: str | None = None  # opcional
-
-class BrandRead(BrandCreate):
-    id: UUID
-    active: bool = True
-    model_config = ConfigDict(from_attributes=True)
+from app.schemas.brand import BrandRead
+from app.schemas.category import CategoryRead
 
 # --- Images ---
 class ProductImageCreate(BaseModel):

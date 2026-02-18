@@ -36,7 +36,14 @@ class Settings(BaseSettings):
     METRICS_NAMESPACE: str = "fastapi"
     METRICS_LATENCY_BUCKETS: list[float] = Field(default_factory=lambda: [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0])
     STRICT_TRANSPORT_SECURITY: str = "max-age=63072000; includeSubDomains; preload"
-    CONTENT_SECURITY_POLICY: str = "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    # Incluye cdn.jsdelivr.net y recursos de FastAPI para que Swagger UI cargue correctamente.
+    CONTENT_SECURITY_POLICY: str = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https://fastapi.tiangolo.com; "
+        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    )
     X_FRAME_OPTIONS: str = "DENY"
     X_CONTENT_TYPE_OPTIONS: str = "nosniff"
     REFERRER_POLICY: str = "no-referrer"
