@@ -20,6 +20,7 @@ from . import scoring
 from . import users
 from . import variants
 from . import wishes
+from . import admin_product_questions
 
 __all__ = [
     "admin",
@@ -44,4 +45,5 @@ __all__ = [
     "users",
     "variants",
     "wishes",
+    "admin_product_questions",
 ]

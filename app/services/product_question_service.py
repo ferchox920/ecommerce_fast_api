@@ -17,6 +17,7 @@ from app.schemas.product_question import (
     QuestionBlockPayload,
 )
 from app.services import notification_service
+from app.schemas.admin_product_question import AdminPendingQuestionSummary
 
 
 def _as_uuid(value: str | uuid.UUID, field: str) -> uuid.UUID:
@@ -44,6 +45,43 @@ async def list_questions(
         )
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+async def list_pending_questions_for_admin(db: AsyncSession, *, limit: int = 5):
+    stmt = (
+        select(
+            ProductQuestion.id,
+            ProductQuestion.product_id,
+            ProductQuestion.content.label("body"),
+            ProductQuestion.created_at,
+            Product.title.label("product_title"),
+            User.full_name.label("author_full_name"),
+            User.email.label("author_email"),
+        )
+        .join(Product, Product.id == ProductQuestion.product_id)
+        .outerjoin(User, User.id == ProductQuestion.user_id)
+        .where(
+            ProductQuestion.status == QuestionStatus.pending,
+            ProductQuestion.is_blocked == False,  # noqa: E712
+        )
+        .order_by(ProductQuestion.created_at.desc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    summaries: list[AdminPendingQuestionSummary] = []
+    for row in result.all():
+        author_name = row.author_full_name or row.author_email
+        summaries.append(
+            AdminPendingQuestionSummary(
+                id=row.id,
+                product_id=row.product_id,
+                body=row.body,
+                created_at=row.created_at,
+                product_title=row.product_title,
+                author_name=author_name,
+            )
+        )
+    return summaries
 
 
 async def _load_question(db: AsyncSession, question_id: uuid.UUID) -> ProductQuestion:
