@@ -1,33 +1,35 @@
-# app/initial_data.py
+"""Utilities to bootstrap initial application data."""
+
+from __future__ import annotations
+
 import logging
-from sqlalchemy import select, func, text
-from sqlalchemy.ext.asyncio import AsyncSession
 from contextlib import asynccontextmanager
 
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
-from app.models.user import User
-from app.services import user_service
-from app.schemas.user import UserCreate
+from app.core.security import get_password_hash, verify_password
 from app.db.session_async import AsyncSessionLocal
+from app.models.user import User
+from app.schemas.user import UserCreate
+from app.services import user_service
 
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def _advisory_lock(session: AsyncSession):
-    """
-    Evita carreras en entornos multi-worker (PostgreSQL).
-    No hace nada en SQLite/otros dialectos.
-    """
+    """Prevent concurrent admin initialization when running on PostgreSQL."""
     dialect = session.bind.dialect.name if session.bind else "unknown"
-    lock_key = 987654321  # cualquier entero estable
+    lock_key = 987654321
     got_lock = False
     try:
         if dialect == "postgresql":
-            # pg_try_advisory_lock devuelve true/false
             res = await session.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": lock_key})
             got_lock = bool(res.scalar())
             if not got_lock:
-                logger.info("Otro worker ya está inicializando admin; salto esta instancia.")
+                logger.info("Another worker is already initializing the admin; skipping this pass.")
                 yield False
                 return
         yield True
@@ -35,56 +37,73 @@ async def _advisory_lock(session: AsyncSession):
         if got_lock:
             await session.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_key})
 
-async def create_initial_admin_user():
-    """
-    Crea el admin inicial si:
-      - Hay credenciales en env (.env) y
-      - No existe ningún superusuario.
-    Es idempotente, con protección a carreras (en Postgres).
-    """
+
+async def create_initial_admin_user() -> None:
+    """Ensure the initial admin user matches the credentials configured in the environment."""
     if not settings.INITIAL_ADMIN_EMAIL or not settings.INITIAL_ADMIN_PASSWORD:
-        logger.info("Skipping admin init: faltan INITIAL_ADMIN_EMAIL o INITIAL_ADMIN_PASSWORD.")
+        logger.info("Skipping admin init: INITIAL_ADMIN_EMAIL or INITIAL_ADMIN_PASSWORD is missing.")
         return
 
-    logger.info("Inicialización de admin: iniciando verificación…",
-                extra={"email": str(settings.INITIAL_ADMIN_EMAIL)})
+    admin_email = str(settings.INITIAL_ADMIN_EMAIL)
+    admin_password = settings.INITIAL_ADMIN_PASSWORD
+    logger.info("Initial admin sync: starting verification.", extra={"email": admin_email})
 
     async with AsyncSessionLocal() as session:
         async with _advisory_lock(session) as proceed:
             if proceed is False:
                 return
 
-            # 1) Ya existe algún superadmin?
             stmt = select(func.count()).select_from(User).where(User.is_superuser.is_(True))
-            result = await session.execute(stmt)
-            if (result.scalar() or 0) > 0:
-                logger.info("Ya existe al menos un superusuario; no se crea otro.")
-                return
+            superuser_count = (await session.execute(stmt)).scalar() or 0
 
-            # 2) Existe el usuario con ese email?
-            existing = await user_service.get_by_email(session, str(settings.INITIAL_ADMIN_EMAIL))
+            existing = await user_service.get_by_email(session, admin_email)
             if existing:
+                updated = False
                 if not existing.is_superuser:
-                    # Promoción explícita (idempotente)
                     existing.is_superuser = True
+                    updated = True
+                if not existing.email_verified:
                     existing.email_verified = True
+                    updated = True
+
+                needs_reset = (
+                    bool(admin_password)
+                    and (
+                        not existing.hashed_password
+                        or not verify_password(admin_password, existing.hashed_password)
+                    )
+                )
+                if needs_reset:
+                    existing.hashed_password = get_password_hash(admin_password)
+                    updated = True
+
+                if updated:
+                    session.add(existing)
                     await session.commit()
-                    logger.warning(
-                        "Usuario inicial ya existía sin permisos; promovido a superadmin.",
+                    await session.refresh(existing)
+                    logger.info(
+                        "Initial admin synchronized with environment credentials.",
                         extra={"user_id": str(existing.id), "email": existing.email},
                     )
                 else:
-                    logger.info("El usuario inicial ya era superadmin; nada que hacer.")
+                    logger.info(
+                        "Initial admin already matches configured credentials.",
+                        extra={"user_id": str(existing.id), "email": existing.email},
+                    )
                 return
 
-            # 3) Crear usuario y marcarlo admin
+            if superuser_count > 0:
+                logger.warning(
+                    "Existing superusers detected; creating the configured initial admin anyway.",
+                    extra={"email": admin_email},
+                )
+
             user_in = UserCreate(
-                email=str(settings.INITIAL_ADMIN_EMAIL),
-                password=settings.INITIAL_ADMIN_PASSWORD,
+                email=admin_email,
+                password=admin_password,
                 full_name="Initial Admin",
             )
 
-            # create_user debe hashear password y persistir
             user = await user_service.create_user(session, user_in)
             user.is_superuser = True
             user.email_verified = True
@@ -92,5 +111,7 @@ async def create_initial_admin_user():
             await session.commit()
             await session.refresh(user)
 
-            logger.info("Superadmin creado correctamente.",
-                        extra={"user_id": str(user.id), "email": user.email})
+            logger.info(
+                "Initial admin created successfully.",
+                extra={"user_id": str(user.id), "email": user.email},
+            )

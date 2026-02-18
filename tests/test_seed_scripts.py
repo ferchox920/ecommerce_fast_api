@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -101,6 +102,28 @@ async def test_seed_dev_products_populates_catalog(async_db_session):
         await async_db_session.execute(select(func.count(Product.id)))
     ).scalar_one()
     assert total_products_second_run == total_products
+
+
+@pytest.mark.asyncio
+async def test_seed_dev_products_images_are_accessible():
+    url_pairs: list[tuple[str, str]] = []
+    for seed in seed_dev_products.PRODUCTS:
+        slug = seed.slug or slugify(seed.title)
+        assert seed.images, f"{slug} is missing dev seed images"
+        for image in seed.images:
+            url_pairs.append((slug, image.url))
+
+    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+        for slug, url in url_pairs:
+            try:
+                response = await client.head(url)
+            except httpx.HTTPError as exc:
+                pytest.fail(f"{slug} image {url} failed with {exc!s}")
+
+            if response.status_code >= 400:
+                response = await client.get(url, headers={"Range": "bytes=0-0"})
+
+            assert response.status_code < 400, f"{slug} image {url} returned {response.status_code}"
 
 
 @pytest.mark.asyncio

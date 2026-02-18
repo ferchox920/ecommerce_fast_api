@@ -24,8 +24,8 @@ from app.db.session_async import AsyncSessionLocal
 from app.models.product import Brand, Category, Product, ProductImage, ProductVariant
 from app.models.supplier import Supplier
 from app.schemas.brand import BrandCreate
+from app.schemas.category import CategoryCreate as ProductCategoryCreate
 from app.schemas.product import (
-    CategoryCreate as ProductCategoryCreate,
     ProductCreate,
     ProductImageCreate,
     ProductVariantCreate,
@@ -172,13 +172,13 @@ PRODUCTS: tuple[ProductSeed, ...] = (
         ),
         images=(
             ImageSeed(
-                url="https://res.cloudinary.com/demo/image/upload/v1690980123/campera_denim_1.jpg",
+                url="https://images.unsplash.com/photo-1495105787522-5334e3ffa0ef?auto=format&fit=crop&w=1200&q=80",
                 alt_text="Campera denim clasica frente",
                 is_primary=True,
                 sort_order=0,
             ),
             ImageSeed(
-                url="https://res.cloudinary.com/demo/image/upload/v1690980123/campera_denim_2.jpg",
+                url="https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=1200&q=80",
                 alt_text="Detalle espalda campera denim",
                 sort_order=1,
             ),
@@ -206,9 +206,15 @@ PRODUCTS: tuple[ProductSeed, ...] = (
         ),
         images=(
             ImageSeed(
-                url="https://res.cloudinary.com/demo/image/upload/v1690980123/mochila_gris.jpg",
+                url="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80",
                 alt_text="Mochila impermeable gris",
                 is_primary=True,
+                sort_order=0,
+            ),
+            ImageSeed(
+                url="https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&w=1200&q=80",
+                alt_text="Detalle de bolsillos mochila impermeable gris",
+                sort_order=1,
             ),
         ),
     ),
@@ -247,7 +253,19 @@ PRODUCTS: tuple[ProductSeed, ...] = (
                 allow_preorder=True,
             ),
         ),
-        images=tuple(),
+        images=(
+            ImageSeed(
+                url="https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=1200&q=80",
+                alt_text="Remera basica organica frente",
+                is_primary=True,
+                sort_order=0,
+            ),
+            ImageSeed(
+                url="https://images.unsplash.com/photo-1489987707025-afc232f7ea0f?auto=format&fit=crop&w=1200&q=80",
+                alt_text="Detalle tejido remera basica organica",
+                sort_order=1,
+            ),
+        ),
     ),
 )
 
