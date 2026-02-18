@@ -19,6 +19,12 @@ class PayloadLimitMiddleware(BaseHTTPMiddleware):
         self.max_bytes = max_bytes or settings.MAX_REQUEST_SIZE_BYTES
         self.logger = get_logger("app.request_limit")
 
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
     async def dispatch(self, request: Request, call_next: Callable):
         content_length = request.headers.get("content-length")
         if content_length:

@@ -20,6 +20,12 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         self.log_4xx = log_4xx
         self.log_5xx = log_5xx
 
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
     async def dispatch(self, request: Request, call_next) -> Response:
         start = time.perf_counter()
         try:
