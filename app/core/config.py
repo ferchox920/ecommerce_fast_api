@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # --- URLs ---
     API_BASE_URL: str = "http://127.0.0.1:8000"
     FRONTEND_URL: str = ""
+    GOOGLE_OAUTH_CLIENT_ID: str = ""
 
     # --- Payments / Mercado Pago ---
     MERCADO_PAGO_ACCESS_TOKEN: str = ""

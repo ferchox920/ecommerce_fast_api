@@ -21,9 +21,22 @@ from app.core.security import (
 from app.db.operations import commit_async
 from app.db.session_async import get_async_db
 from app.models.user import User
-from app.schemas.auth import OAuthUpsertRequest, RefreshRequest, TokenPair, TokenRefresh, VerifyEmailRequest
+from app.schemas.auth import (
+    OAuthFrontendConfigResponse,
+    OAuthTokenExchangeRequest,
+    OAuthUpsertRequest,
+    RefreshRequest,
+    TokenPair,
+    TokenRefresh,
+    VerifyEmailRequest,
+)
 from app.schemas.user import UserRead
 from app.services.email_service import send_verification_email
+from app.services.oauth_service import (
+    OAuthValidationError,
+    get_oauth_frontend_providers,
+    verify_provider_id_token,
+)
 from app.services.user_service import (
     authenticate,
     get_by_email,
@@ -58,6 +71,19 @@ def _get_user_scopes(user: User) -> list[str]:
     return user_scopes
 
 
+def _build_token_pair(user: User) -> dict[str, object]:
+    user_scopes = _get_user_scopes(user)
+    access = create_access_token(subject=user.id, extra={"scopes": user_scopes})
+    refresh = create_refresh_token(subject=user.id, extra={"scopes": user_scopes})
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "user": UserRead.model_validate(user),
+    }
+
+
 @router.post("/login", response_model=TokenPair)
 async def login(
     request: Request,
@@ -82,10 +108,6 @@ async def login(
         )
 
     record_login_attempt("success")
-    user_scopes = _get_user_scopes(user)
-    access = create_access_token(subject=user.id, extra={"scopes": user_scopes})
-    refresh = create_refresh_token(subject=user.id, extra={"scopes": user_scopes})
-
     user.last_login_at = datetime.now(timezone.utc)
     db.add(user)
     await commit_async(db)
@@ -99,13 +121,7 @@ async def login(
         },
     )
 
-    return {
-        "access_token": access,
-        "refresh_token": refresh,
-        "token_type": "bearer",
-        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        "user": UserRead.model_validate(user),
-    }
+    return _build_token_pair(user)
 
 
 @router.post("/refresh", response_model=TokenRefresh)
@@ -190,13 +206,47 @@ async def oauth_upsert(payload: OAuthUpsertRequest, db: AsyncSession = Depends(g
 
     await commit_async(db)
 
-    user_scopes = _get_user_scopes(user)
-    access = create_access_token(subject=user.id, extra={"scopes": user_scopes})
-    refresh = create_refresh_token(subject=user.id, extra={"scopes": user_scopes})
-    return {
-        "access_token": access,
-        "refresh_token": refresh,
-        "token_type": "bearer",
-        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        "user": UserRead.model_validate(user),
-    }
+    return _build_token_pair(user)
+
+
+@router.get("/oauth/config", response_model=OAuthFrontendConfigResponse)
+async def oauth_frontend_config():
+    providers = get_oauth_frontend_providers()
+    return OAuthFrontendConfigResponse(providers=providers)
+
+
+@router.post("/oauth/exchange", response_model=TokenPair)
+async def oauth_exchange(
+    payload: OAuthTokenExchangeRequest,
+    db: AsyncSession = Depends(get_async_db),
+):
+    from app.schemas.user import UserCreateOAuth  # import local para evitar ciclos
+
+    try:
+        identity = await verify_provider_id_token(payload.provider, payload.id_token)
+    except OAuthValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    user_payload = UserCreateOAuth(
+        email=str(identity["email"]),
+        full_name=identity.get("full_name"),
+        oauth_provider=str(identity["provider"]),
+        oauth_sub=str(identity["sub"]),
+        oauth_picture=identity.get("picture"),
+        email_verified_from_provider=bool(identity.get("email_verified")),
+    )
+    user = await upsert_oauth_user(db, user_payload)
+
+    if settings.ENFORCE_EMAIL_VERIFICATION and not user.email_verified:
+        token = create_email_verification_token(user.id)
+        verify_url = f"{settings.API_BASE_URL}{settings.API_V1_STR}/auth/verify/confirm?token={token}"
+        send_verification_email(user.email, verify_url)
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Verification sent.",
+        )
+
+    user.last_login_at = datetime.now(timezone.utc)
+    db.add(user)
+    await commit_async(db)
+    return _build_token_pair(user)
