@@ -18,7 +18,7 @@ async def get_profile(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Security(get_current_user, scopes=["users:me"]),
 ):
-    target_user = user_id or current_user.id
+    target_user = user_id or str(current_user.id)
     profile = await loyalty_service.get_profile(db, target_user)
     return LoyaltyProfileRead.model_validate(profile)
 
@@ -39,7 +39,7 @@ async def redeem_reward(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Security(get_current_user, scopes=["users:me"]),
 ):
-    target_user = payload.user_id or current_user.id
+    target_user = payload.user_id or str(current_user.id)
     redeem_payload = LoyaltyRedeemPayload(
         user_id=target_user,
         points=payload.points,

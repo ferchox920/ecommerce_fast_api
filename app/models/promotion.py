@@ -16,6 +16,7 @@ class PromotionType(str, Enum):
     category = "category"
     product = "product"
     customer = "customer"
+    loyalty = "loyalty"
 
 
 class PromotionStatus(str, Enum):

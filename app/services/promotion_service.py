@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.operations import flush_async, refresh_async
-from app.models.promotion import Promotion, PromotionStatus, PromotionType
+from app.models.promotion import Promotion, PromotionCustomer, PromotionStatus, PromotionType
 from app.schemas.promotion import PromotionCreate, PromotionUpdate
 from app.services import notification_service
 from app.services.event_bus import emit_promotion_event
@@ -29,13 +29,122 @@ def _is_time_active(promotion: Promotion, now: datetime) -> bool:
     return start_at <= now <= end_at
 
 
+def _extract_string_list(criteria: dict, key: str) -> list[str]:
+    raw = criteria.get(key, [])
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _resolve_scope(promotion_type: PromotionType, scope: Optional[str]) -> str:
+    if scope is None or not str(scope).strip():
+        if promotion_type == PromotionType.product:
+            return "product"
+        if promotion_type == PromotionType.category:
+            return "category"
+        return "global"
+
+    normalized_scope = str(scope).strip().lower()
+    allowed_scopes = {"global", "product", "category"}
+    if normalized_scope not in allowed_scopes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="scope must be one of: global, product, category",
+        )
+    if promotion_type == PromotionType.product and normalized_scope != "product":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="product promotions must use scope 'product'",
+        )
+    if promotion_type == PromotionType.category and normalized_scope != "category":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="category promotions must use scope 'category'",
+        )
+    return normalized_scope
+
+
+def _validate_promotion_constraints(
+    *,
+    promotion_type: PromotionType,
+    scope: str,
+    criteria: dict,
+    start_at: datetime,
+    end_at: datetime,
+) -> None:
+    if end_at <= start_at:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="end_at must be greater than start_at",
+        )
+
+    if scope == "product" and not _extract_string_list(criteria, "product_ids"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="scope 'product' requires at least one product_id in criteria.product_ids",
+        )
+
+    if scope == "category" and not _extract_string_list(criteria, "category_ids"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="scope 'category' requires at least one category_id in criteria.category_ids",
+        )
+
+    if promotion_type == PromotionType.customer:
+        customer_ids = _extract_string_list(criteria, "customer_ids")
+        if not customer_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="customer promotions require customer_ids",
+            )
+        if _extract_string_list(criteria, "loyalty_levels"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="customer promotions cannot include loyalty_levels; use type 'loyalty'",
+            )
+
+    if promotion_type == PromotionType.loyalty:
+        loyalty_levels = _extract_string_list(criteria, "loyalty_levels")
+        if not loyalty_levels:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="loyalty promotions require loyalty_levels",
+            )
+        if _extract_string_list(criteria, "customer_ids"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="loyalty promotions cannot include customer_ids; use type 'customer'",
+            )
+
+
 async def create_promotion(db: AsyncSession, payload: PromotionCreate) -> Promotion:
+    criteria = payload.criteria or {}
+    promotion_type = PromotionType(payload.type)
+    scope = _resolve_scope(promotion_type, payload.scope)
+    _validate_promotion_constraints(
+        promotion_type=promotion_type,
+        scope=scope,
+        criteria=criteria,
+        start_at=payload.start_at,
+        end_at=payload.end_at,
+    )
+    raw_customer_ids = (
+        criteria.get("customer_ids", [])
+        if isinstance(criteria, dict) and promotion_type == PromotionType.customer
+        else []
+    )
+    customer_ids = (
+        list({str(customer_id) for customer_id in raw_customer_ids if str(customer_id).strip()})
+        if isinstance(raw_customer_ids, list)
+        else []
+    )
+
     promotion = Promotion(
         name=payload.name,
         description=payload.description,
-        type=PromotionType(payload.type),
-        scope=payload.scope or "global",
-        criteria_json=payload.criteria or {},
+        type=promotion_type,
+        scope=scope,
+        criteria_json=criteria,
         benefits_json=payload.benefits or {},
         start_at=payload.start_at,
         end_at=payload.end_at,
@@ -43,14 +152,18 @@ async def create_promotion(db: AsyncSession, payload: PromotionCreate) -> Promot
     )
     db.add(promotion)
     await flush_async(db, promotion)
+    if customer_ids:
+        for customer_id in customer_ids:
+            db.add(PromotionCustomer(promotion_id=promotion.id, customer_id=customer_id))
+        await flush_async(db)
     await refresh_async(db, promotion)
     return promotion
 
 
-async def list_promotions(db: AsyncSession, status_filter: Optional[str] = None):
+async def list_promotions(db: AsyncSession, status_filter: Optional[PromotionStatus] = None):
     stmt = select(Promotion)
     if status_filter:
-        stmt = stmt.where(Promotion.status == PromotionStatus(status_filter))
+        stmt = stmt.where(Promotion.status == status_filter)
     result = await db.execute(stmt.order_by(Promotion.start_at.desc()))
     return result.scalars().all()
 
@@ -75,14 +188,45 @@ async def update_promotion(
     db: AsyncSession, promotion_id: UUID, payload: PromotionUpdate
 ) -> Promotion:
     promotion = await get_promotion(db, promotion_id)
+    next_scope = _resolve_scope(promotion.type, payload.scope) if payload.scope is not None else promotion.scope
+    next_criteria = payload.criteria if payload.criteria is not None else (promotion.criteria_json or {})
+    next_start_at = payload.start_at if payload.start_at is not None else promotion.start_at
+    next_end_at = payload.end_at if payload.end_at is not None else promotion.end_at
+    _validate_promotion_constraints(
+        promotion_type=promotion.type,
+        scope=next_scope,
+        criteria=next_criteria,
+        start_at=next_start_at,
+        end_at=next_end_at,
+    )
+
     if payload.name is not None:
         promotion.name = payload.name
     if payload.description is not None:
         promotion.description = payload.description
-    if payload.scope is not None:
-        promotion.scope = payload.scope
+    promotion.scope = next_scope
     if payload.criteria is not None:
         promotion.criteria_json = payload.criteria
+        raw_customer_ids = (
+            payload.criteria.get("customer_ids", [])
+            if isinstance(payload.criteria, dict) and promotion.type == PromotionType.customer
+            else []
+        )
+        customer_ids = (
+            list(
+                {
+                    str(customer_id)
+                    for customer_id in raw_customer_ids
+                    if str(customer_id).strip()
+                }
+            )
+            if isinstance(raw_customer_ids, list)
+            else []
+        )
+        promotion.customers = [
+            PromotionCustomer(promotion_id=promotion.id, customer_id=customer_id)
+            for customer_id in customer_ids
+        ]
     if payload.benefits is not None:
         promotion.benefits_json = payload.benefits
     if payload.start_at is not None:
@@ -163,12 +307,15 @@ def evaluate_eligibility(
 
     if promotion.type == PromotionType.customer:
         targeted = {pc.customer_id for pc in promotion.customers}
+        if not targeted:
+            targeted = {str(cid) for cid in criteria.get("customer_ids", []) if str(cid).strip()}
         if targeted and (not user_id or user_id not in targeted):
             return False, ["not_targeted"]
 
-    loyalty_levels = criteria.get("loyalty_levels")
-    if loyalty_levels and loyalty_level not in loyalty_levels:
-        return False, ["loyalty_level_required"]
+    if promotion.type == PromotionType.loyalty:
+        loyalty_levels = {str(level) for level in criteria.get("loyalty_levels", []) if str(level).strip()}
+        if loyalty_levels and (not loyalty_level or loyalty_level not in loyalty_levels):
+            return False, ["loyalty_level_required"]
 
     min_order_total = criteria.get("min_order_total")
     if min_order_total and (order_total or 0) < min_order_total:

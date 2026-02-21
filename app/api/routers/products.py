@@ -64,7 +64,17 @@ async def public_list(
 async def public_get(slug: str, db: AsyncSession = Depends(get_async_db)):
     prod = await product_service.get_product_by_slug(db, slug)
     if not prod:
-        raise HTTPException(status_code=404, detail="Product not found")
+        # Compatibilidad: algunos flujos aún envían product_id en vez de slug.
+        # Permitimos fallback por UUID manteniendo visibilidad pública solo para activos.
+        try:
+            UUID(slug)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        prod_by_id = await product_service.get_product_by_id(db, slug)
+        if not prod_by_id or not getattr(prod_by_id, "active", False):
+            raise HTTPException(status_code=404, detail="Product not found")
+        return prod_by_id
     return prod
 
 

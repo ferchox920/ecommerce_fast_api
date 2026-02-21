@@ -11,7 +11,7 @@ class PromotionCreate(BaseModel):
     name: str
     description: Optional[str] = None
     type: str
-    scope: Optional[str] = "global"
+    scope: Optional[str] = None
     criteria: dict = Field(default_factory=dict)
     benefits: dict = Field(default_factory=dict)
     start_at: datetime

@@ -110,7 +110,7 @@ async def test_rate_view_pipeline(client: AsyncClient, admin_token: str, user_to
             "name": "Promo Test",
             "description": "Test promo",
             "type": "product",
-            "criteria": {},
+            "criteria": {"product_ids": [product["id"]]},
             "benefits": {"discount_percent": 10},
             "start_at": _utc_iso(datetime.now(timezone.utc) - timedelta(minutes=1)),
             "end_at": _utc_iso(datetime.now(timezone.utc) + timedelta(days=5)),

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.db.session_async import get_async_db
+from app.models.promotion import PromotionStatus
 from app.models.user import User
 from app.schemas.promotion import PromotionCreate, PromotionUpdate, PromotionRead
 from app.services import promotion_service
@@ -27,7 +28,7 @@ async def create_promotion(
 
 @router.get("", response_model=list[PromotionRead])
 async def list_promotions(
-    status_filter: Optional[str] = None,
+    status_filter: Optional[PromotionStatus] = None,
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Security(get_current_user, scopes=["admin"]),
 ):
