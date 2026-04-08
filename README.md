@@ -5,190 +5,179 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
 ![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x-orange)
 ![Alembic](https://img.shields.io/badge/Migrations-Alembic-lightgrey)
-![Pytest](https://img.shields.io/badge/Tests-Pytest-blueviolet)
+![Pytest](https://img.shields.io/badge/Tests-70%20passed-brightgreen)
 
-Backend modular para un e-commerce moderno construido con **FastAPI**. El proyecto cubre catalogo, inventario, ordenes, promociones, fidelizacion y analiticas, apoyado en pruebas automaticas y migraciones reproducibles.
+Backend modular para un ecommerce construido con **FastAPI**, **SQLAlchemy 2.x** y **Alembic**. El proyecto cubre catalogo, inventario, carrito, ordenes, pagos, abastecimiento, promociones, fidelizacion, notificaciones, preguntas sobre productos, analiticas y reportes.
 
----
+## Estado actual
 
-### Caracteristicas principales
+- Suite actual: `70` tests aprobados.
+- Catalogo, inventario, carrito, ordenes y compras: implementados y probados.
+- Pagos con Mercado Pago: preferencia, webhook firmado, idempotencia, dedupe, refund total/parcial y auditoria.
+- Exposure engine: operativo, con cache y metricas basicas de observabilidad.
 
-#### Catalogo y stock
+## Caracteristicas principales
+
+### Catalogo e inventario
+
 - CRUD de productos, variantes, imagenes, marcas y categorias.
-- Gestion de inventario con movimientos (`receive`, `reserve`, `release`, `sale`, `adjust`) y auditoria.
-- Alertas de reposicion segun `reorder_point` / `reorder_qty`.
+- Movimientos de stock: `receive`, `reserve`, `release`, `sale`, `adjust`.
+- Alertas de reposicion y sugerencias de reabastecimiento.
+- Evaluacion de calidad de producto.
 
-#### Abastecimiento y ordenes
-- Proveedores con ordenes de compra (`draft`, `placed`, `received`, `cancelled`).
-- Recepciones que afectan el inventario automaticamente.
-- Conversion de datos de reposicion en compras sugeridas.
+### Carrito y ordenes
 
-#### Rate View & Engagement
-- Colector de eventos (`view`, `click`, `add_to_cart`, `purchase`) con deduplicacion y buckets horarios.
-- Agregados diarios por producto y cliente (`product_engagement_daily`, `customer_engagement_daily`).
-- Calculo horario de **scoring** con decaimiento exponencial para:
-  - `popularity_score`, `cold_score`, `profit_score`, `freshness_score`.
-  - `exposure_score` configurable (70 % popularidad / 30 % estrategia).
+- Carrito para usuario autenticado y anonimo con `guest_token`.
+- Conversion de carrito a orden.
+- Ordenes con lineas, pagos, shipment y estados operativos.
+- Regla de negocio aplicada: el admin no realiza checkout de cliente.
 
-#### Exposure Engine
-- Endpoint `/exposure` para generar mixes balanceados (home, category, personalized).
-- Reglas para limitar repeticiones, impulsar productos frios con stock y respetar caps por categoria.
-- Cache hibrida (Redis + fallback in-memory) con TTL; persistencia en `exposure_slots`.
-- Notas de integracion para badges, pinning temporal y consumo via WebSocket.
+### Pagos
 
-#### Promociones dinamicas
-- CRUD administrativo (`/admin/promotions`), activacion/desactivacion con eventos `promotion_start` / `promotion_end`.
-- Evaluacion de elegibilidad segun `scope`, segmentos, nivel de fidelizacion y ticket minimo.
-- `promotions` expone promociones activas y endpoint `/eligibility` para checkout/personalizacion.
+- Integracion con Mercado Pago para crear preferencias de checkout.
+- Idempotencia por `Idempotency-Key` en creacion de pagos.
+- Webhook con validacion de firma y deduplicacion de eventos.
+- Refund administrativo total o parcial.
+- Auditoria de pagos con eventos webhook y refunds persistidos.
 
-#### Fidelizacion
-- Perfiles en `loyalty_profile` con niveles (`loyalty_levels`) y puntos.
-- Procesamiento automatico en compras, upgrades con eventos `loyalty_upgrade` y redenciones (`/loyalty/redeem`).
-- Notificaciones y perks disponibles en `perks_json` para integraciones posteriores.
+### Promociones, loyalty y engagement
 
-#### Pagos y pedidos
-- Modelo de ordenes completo con pagos (`Payment`) y envios (`Shipment`).
-- Integracion inicial con Mercado Pago (preferencias, webhook) y notificaciones a usuarios/admin.
+- CRUD administrativo de promociones y elegibilidad publica.
+- Loyalty con perfiles, niveles, ajustes y redencion.
+- Ingesta de eventos `view`, `click`, `add_to_cart`, `purchase`.
+- Scoring y exposure mix con reglas de popularidad, stock y cold boost.
 
-#### Notificaciones
-- Canal centralizado (`notifications`) compatible con WebSocket y correo.
-- Eventos de preguntas, ordenes, promociones y fidelizacion.
+### Notificaciones y preguntas
 
-#### Analiticas
-- `/admin/analytics/overview` resume ingresos, mix de exposicion y distribucion por niveles.
-- Servicios auxiliares para dashboards y futuros reportes.
+- Bandeja de notificaciones.
+- WebSocket autenticado.
+- Preguntas sobre productos con respuesta y moderacion administrativa.
 
-#### Observabilidad y seguridad
-- Métricas Prometheus para `/events` (latencia, descartes por rate limit), `/exposure` (latencia, cache hit ratio, CTR por slot), promociones (revenue lift) y loyalty (tasa de upgrade).
-- Logs estructurados JSON con `request_id`, hash de `user_id`, `product_id`, `promotion_id` y metadata clave, enviados al agregador central con protecciones PII.
-- Trazas correlacionadas vía OpenTelemetry (W3C Trace Context) entre FastAPI, workers y adaptadores (PostgreSQL, Redis, colas).
-- Controles de seguridad: rate limiting IP/usuario en `/events`, auditoría de cambios de promociones, detección de bursts sospechosos y webhooks firmados con mTLS interno.
+### Reportes y analiticas
 
----
+- Overview administrativo.
+- Dashboard operativo.
+- Reportes de ventas, valor de inventario, costos de compra y rotacion.
+- Ejecucion directa o via Celery.
 
-### Arquitectura
+## Arquitectura
 
-- **FastAPI** y **Pydantic v2** para la capa HTTP y validaciones.
-- **SQLAlchemy 2.x** + **Alembic** para ORM y migraciones.
-- **PostgreSQL** como base de datos principal (tests usan SQLite).
+- **FastAPI** para la capa HTTP.
+- **Pydantic v2** para validacion y serializacion.
+- **SQLAlchemy 2.x** con sesiones async.
+- **Alembic** para migraciones.
+- **PostgreSQL** como base principal.
+- **SQLite** para tests locales.
 - **Redis** opcional para cache del exposure engine.
-- Servicios modulares en `app/services`:
-  - `engagement_service`, `scoring_service`, `exposure_service`, `promotion_service`, `loyalty_service`, `analytics_service`, entre otros.
-- Bus de eventos simple (`event_bus`) listo para conectarse a adaptadores externos.
-- Pruebas con **pytest**, **pytest-asyncio** y **httpx.AsyncClient**.
+- **Celery** para tareas y reportes.
 
----
+Estructura principal:
 
-### Endpoints destacados
+- `app/api`: routers HTTP y WebSocket.
+- `app/models`: modelos ORM.
+- `app/schemas`: contratos de entrada/salida.
+- `app/services`: logica de negocio.
+- `app/tasks`: tareas Celery.
+- `migrations/versions`: historial de migraciones.
+- `tests`: cobertura automatizada.
 
-| Dominio              | Ruta / Metodo                                  | Descripcion breve |
-|---------------------|-------------------------------------------------|-------------------|
-| Eventos             | `POST /api/v1/events`                           | Ingresa eventos (tracking). |
-| Exposure            | `GET /api/v1/exposure`                          | Mix de productos balanceado. |
-| Scoring             | `POST /api/v1/internal/scoring/run`             | Ejecuta job de ranking (interno). |
-| Promociones admin   | `POST /api/v1/admin/promotions`                 | Crea promocion. |
-|                     | `POST /api/v1/admin/promotions/{id}/activate`   | Activa promocion. |
-| Promociones public  | `GET /api/v1/promotions/active`                 | Lista promociones activas. |
-|                     | `GET /api/v1/promotions/{id}/eligibility`       | Consulta elegibilidad. |
-| Fidelizacion        | `GET /api/v1/loyalty/profile`                   | Perfil de puntos/nivel. |
-|                     | `POST /api/v1/loyalty/redeem`                   | Redimir recompensa. |
-| Ordenes y pagos     | `/api/v1/orders`, `/api/v1/payments`            | Creacion de ordenes y checkout. |
-| Preguntas           | `/api/v1/products/{id}/questions`               | Q&A sobre productos (con moderacion). |
-| Notificaciones      | `/api/v1/notifications`, `ws`                   | Bandeja y WebSocket. |
-| Analiticas          | `GET /api/v1/admin/analytics/overview`          | KPIs generales. |
+## Endpoints destacados
 
----
+| Dominio | Ruta / Metodo | Descripcion |
+|---|---|---|
+| Auth | `POST /api/v1/auth/login` | Login con JWT. |
+| Productos | `GET /api/v1/products` | Listado publico con filtros. |
+| Carrito | `POST /api/v1/cart/items` | Agrega item al carrito. |
+| Ordenes | `POST /api/v1/orders` | Crea orden para usuario cliente. |
+| Ordenes | `POST /api/v1/orders/from-cart` | Convierte carrito a orden. |
+| Pagos | `POST /api/v1/payments/orders/{order_id}` | Crea preferencia de pago. |
+| Pagos | `POST /api/v1/payments/mercado-pago/webhook` | Webhook del proveedor. |
+| Pagos | `POST /api/v1/payments/{payment_id}/refund` | Refund administrativo total o parcial. |
+| Pagos | `GET /api/v1/payments/{payment_id}/audit` | Auditoria del pago. |
+| Promociones | `GET /api/v1/promotions/active` | Lista promociones activas. |
+| Loyalty | `GET /api/v1/loyalty/profile` | Perfil de fidelizacion. |
+| Exposure | `GET /api/v1/exposure` | Mix de productos balanceado. |
+| Analytics | `GET /api/v1/admin/analytics/overview` | KPIs generales. |
+| Reportes | `GET /api/v1/reports/sales` | Reporte de ventas. |
 
-### Migraciones relevantes
+## Configuracion
 
-| ID (Alembic)              | Descripcion |
-|---------------------------|-------------|
-| `e1a2b3c4d5f6_orders_module` | Base de ordenes (Order/OrderLine). |
-| `f1234567890ab_cart_module`  | Carritos e items. |
-| `1abc2def3ghi_product_questions_notifications` | Q&A y notificaciones. |
-| `0a1b2c3d4e5f_orders_payments_shipments` | Pagos, envios y metadata de ordenes. |
-| `2f6e7a8b9cde_rate_view_system` | Rate View (engagement, rankings, exposure, promociones, loyalty). |
+Archivo base:
 
-Ejecutar migraciones:
+- `.env`
+- `.env.example`
+
+Variables relevantes:
+
+- `DATABASE_URL`
+- `ASYNC_DATABASE_URL`
+- `SECRET_KEY`
+- `REFRESH_SECRET_KEY`
+- `MERCADO_PAGO_ACCESS_TOKEN`
+- `MERCADO_PAGO_WEBHOOK_SECRET`
+- `REDIS_URL`
+- `CELERY_BROKER_URL`
+- `CELERY_RESULT_BACKEND`
+
+## Migraciones
+
+Ejecutar:
+
 ```bash
 alembic upgrade head
 ```
 
----
+Migraciones relevantes del dominio:
 
-### Pruebas
+- `e1a2b3c4d5f6_orders_module`
+- `f1234567890ab_cart_module`
+- `0a1b2c3d4e5f_orders_payments_shipments`
+- `2f6e7a8b9cde_rate_view_system`
+- `b7c3d9e4f1a2_payment_hardening`
+- `c4d5e6f7a8b9_payment_refund_audit`
+
+## Pruebas
+
+Ejecutar:
 
 ```bash
-pytest --maxfail=1 --disable-warnings -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-> Los tests utilizan SQLite en memoria mediante overrides de dependencias (`tests/conftest.py`).
+Estado actual:
 
----
+- `70 passed`
 
-### Snippet base para exponer mixes
+Cobertura funcional principal:
 
-```python
-# app/services/exposure_service.py
-from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends
+- auth y permisos,
+- productos, categorias, marcas, variantes e imagenes,
+- inventario y replenishment,
+- carrito,
+- ordenes,
+- pagos,
+- preguntas y notificaciones,
+- reportes,
+- rate-view.
 
-router = APIRouter(prefix="/exposure", tags=["exposure"])
+## Observabilidad
 
-@router.get("")
-def get_exposure(context: str, user_id: str | None = None, category_id: str | None = None):
-    """
-    INTEGRATION: Consumido por FE para renderizar carruseles/listas.
-    INTEGRATION: 'reason' y 'badges' guían UI (chips/etiquetas).
-    INTEGRATION: Cache TTL coordinado con Redis (ver config.EXPOSURE_TTL_SEC).
+Actualmente el backend expone:
 
-    TODO: leer product_rankings (+ ajustes categoría/temporada)
-    TODO: aplicar reglas (no repetir, impulso fríos, cap por categoría)
-    TODO: mezclar 70/30 (configurable), escribir a exposure_slots, setear TTL
-    TODO: instrumentar métricas (latencia, cache_hit, items_served)
-    """
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-    # stub de respuesta inicial
-    return {
-        "context": context,
-        "mix": [],
-        "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
-    }
-```
+- metricas HTTP generales,
+- metricas de login,
+- metricas de exposure para requests, latencia, cache hit/miss e items servidos,
+- endpoint `/metrics` protegido por admin.
 
----
+## Limitaciones conocidas
 
-### Notas de integracion
+- La integracion de pagos sigue enfocada en Mercado Pago Checkout Pro.
+- No hay conciliacion contable avanzada ni captura parcial.
+- Exposure ya tiene metricas basicas, pero la parte de A/B y observabilidad mas fina sigue abierta.
+- El documento de avance en `docs/ecommerce_avance.md` es la referencia mas precisa del estado actual.
 
-- **Eventos**: `POST /events` se alinea con el tracker del frontend (dataLayer/SDK). El backend de checkout emite `purchase`.
-- **Exposure**: el frontend respeta `reason` y `badges`; los equipos de producto pueden fijar/unfijar productos temporalmente.
-- **Promociones**: checkout aplica `benefits_json` y devuelve `applied_benefits`. Eventos `promotion_start`/`promotion_end` disparan notificaciones.
-- **Fidelizacion**: upgrades y redenciones emiten `loyalty_upgrade` y `loyalty_redeem`; los canales de notificacion escuchan estas colas.
-- **Pagos**: integracion inicial con Mercado Pago lista para expandirse.
+## Referencias internas
 
----
-
-### Roadmap inmediato
-
-- **Fase 1 — Ingesta & Métricas**: POST `/events`, cola `events` y agregador horario hacia `product_engagement_daily` con métricas básicas.
-- **Fase 2 — Scoring & Exposure básico**: job horario, upsert en `product_rankings`, `/exposure` con cache Redis y reglas mínimas.
-- **Fase 3 — Promos**: CRUD + elegibilidad + integración checkout (adapter stub) con auditoría de cambios.
-- **Fase 4 — Loyalty**: perfiles, niveles, upgrades automáticos y eventos `loyalty_upgrade`.
-- **Fase 5 — Observabilidad + A/B**: dashboards, alertas y experimentos de pesos (70/30 vs variantes) con métricas `exposure_hit_ratio`, `ab_variant_conversion`.
-
-- Comentarios guía para el código:
-  - `# TODO(observability): agregar métricas 'exposure_hit_ratio', 'ab_variant_conversion'.`
-  - `# INTEGRATION(security): rate limit IP/user en /events; firmar webhooks internos.`
-  - `# INTEGRATION(AB): feature flag 'exposure_weights' por cohorte.`
-
-- Conectar el bus de eventos a Kafka/Rabbit para desacoplar adaptadores.
-- Obtener margen/stock reales desde ERP para el scoring.
-- Agregar dashboards adicionales (promociones, loyalty) en `/admin/analytics/*`.
-- Frontend (React/Vue) para carruseles personalizados y centro de notificaciones.
-- Automatizar compras a partir de sugerencias en inventario.
-
----
-
-### Autor
-
-Desarrollado por **Fernando Ramones** como base para un backend de e-commerce modular, escalable y auditable, inspirado en arquitectura limpia, DDD y desarrollo guiado por pruebas.
+- Estado funcional actualizado: `docs/ecommerce_avance.md`
+- Notas de OAuth frontend: `docs/oauth_google_frontend.md`
+- Flujo de alta de producto: `docs/product_creation.md`

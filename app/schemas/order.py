@@ -5,7 +5,7 @@ from uuid import UUID
 from datetime import datetime
 
 OrderStatus = Literal["draft", "pending_payment", "paid", "fulfilled", "cancelled", "refunded"]
-PaymentStatus = Literal["pending", "authorized", "approved", "rejected", "cancelled", "refunded"]
+PaymentStatus = Literal["pending", "authorized", "approved", "partially_refunded", "rejected", "cancelled", "refunded"]
 ShippingStatus = Literal["pending", "preparing", "shipped", "delivered", "returned"]
 
 
@@ -42,13 +42,50 @@ class PaymentRead(BaseModel):
     status: PaymentStatus
     status_detail: Optional[str]
     amount: float
+    refunded_amount: float
     currency: str
     init_point: Optional[str]
     sandbox_init_point: Optional[str]
+    refunded_at: Optional[datetime]
+    refund_reason: Optional[str]
     created_at: datetime
     updated_at: Optional[datetime]
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PaymentRefundCreate(BaseModel):
+    amount: Optional[float] = Field(default=None, gt=0)
+    reason: Optional[str] = Field(default=None, max_length=240)
+    restock_items: Optional[bool] = None
+
+
+class PaymentRefundRead(BaseModel):
+    id: UUID
+    amount: float
+    reason: Optional[str]
+    provider_refund_id: Optional[str]
+    status_detail: Optional[str]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PaymentWebhookEventRead(BaseModel):
+    id: UUID
+    event_id: str
+    request_id: Optional[str]
+    signature: Optional[str]
+    processed_at: datetime
+    payload: Optional[dict]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PaymentAuditRead(BaseModel):
+    payment: PaymentRead
+    refunds: List[PaymentRefundRead] = Field(default_factory=list)
+    webhook_events: List[PaymentWebhookEventRead] = Field(default_factory=list)
 
 
 class ShipmentRead(BaseModel):
@@ -92,6 +129,7 @@ class OrderRead(BaseModel):
     paid_at: Optional[datetime]
     fulfilled_at: Optional[datetime]
     cancelled_at: Optional[datetime]
+    refunded_at: Optional[datetime]
     created_at: datetime
     updated_at: Optional[datetime] = None
     lines: List[OrderLineRead] = Field(default_factory=list)

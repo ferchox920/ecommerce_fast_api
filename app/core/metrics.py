@@ -72,6 +72,37 @@ LOGIN_ATTEMPTS = _metric_or_noop(
     )
 )
 
+EXPOSURE_REQUESTS = _metric_or_noop(
+    None
+    if Counter is None
+    else Counter(
+        f"{settings.METRICS_NAMESPACE}_exposure_requests_total",
+        "Total exposure requests partitioned by context and cache outcome.",
+        ["context", "cache"],
+    )
+)
+
+EXPOSURE_ITEMS_SERVED = _metric_or_noop(
+    None
+    if Counter is None
+    else Counter(
+        f"{settings.METRICS_NAMESPACE}_exposure_items_served_total",
+        "Total number of items served by exposure context.",
+        ["context"],
+    )
+)
+
+EXPOSURE_LATENCY = _metric_or_noop(
+    None
+    if Histogram is None
+    else Histogram(
+        f"{settings.METRICS_NAMESPACE}_exposure_duration_seconds",
+        "Exposure generation/lookup latency in seconds.",
+        ["context", "cache"],
+        buckets=settings.METRICS_LATENCY_BUCKETS,
+    )
+)
+
 
 def normalize_path(request) -> str:
     route = request.scope.get("route")
@@ -93,6 +124,13 @@ def record_request_metrics(request, status_code: int, elapsed: float) -> None:
 
 def record_login_attempt(outcome: str) -> None:
     LOGIN_ATTEMPTS.labels(outcome=outcome).inc()
+
+
+def record_exposure_metrics(*, context: str, cache_hit: bool, items_served: int, elapsed: float) -> None:
+    cache_label = "hit" if cache_hit else "miss"
+    EXPOSURE_REQUESTS.labels(context=context, cache=cache_label).inc()
+    EXPOSURE_ITEMS_SERVED.labels(context=context).inc(items_served)
+    EXPOSURE_LATENCY.labels(context=context, cache=cache_label).observe(elapsed)
 
 
 def export_metrics() -> tuple[bytes, str]:

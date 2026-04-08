@@ -52,7 +52,7 @@ async def _create_base(client: AsyncClient, admin_token: str):
 
 
 @pytest.mark.asyncio
-async def test_order_create_and_get(client: AsyncClient, admin_token: str):
+async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_token: str):
     _, variant = await _create_base(client, admin_token)
 
     ro = await client.post(
@@ -63,7 +63,7 @@ async def test_order_create_and_get(client: AsyncClient, admin_token: str):
                 {"variant_id": variant["id"], "quantity": 2}
             ],
         },
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {user_token}"},
     )
     assert ro.status_code == 201, ro.text
     order = ro.json()
@@ -75,7 +75,7 @@ async def test_order_create_and_get(client: AsyncClient, admin_token: str):
 
     rg = await client.get(
         f"/api/v1/orders/{order['id']}",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {user_token}"},
     )
     assert rg.status_code == 200
     og = rg.json()
@@ -85,7 +85,7 @@ async def test_order_create_and_get(client: AsyncClient, admin_token: str):
 
 
 @pytest.mark.asyncio
-async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: str):
+async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: str, user_token: str):
     _, variant = await _create_base(client, admin_token)
 
     ro = await client.post(
@@ -95,7 +95,7 @@ async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: 
                 {"variant_id": variant["id"], "quantity": 1}
             ],
         },
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {user_token}"},
     )
     assert ro.status_code == 201
     order = ro.json()
@@ -107,7 +107,7 @@ async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: 
             "quantity": 3,
             "unit_price": 2000.0,
         },
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {user_token}"},
     )
     assert add.status_code == 200, add.text
     updated = add.json()
@@ -116,7 +116,7 @@ async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: 
 
     pay = await client.post(
         f"/api/v1/orders/{order['id']}/pay",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {user_token}"},
     )
     assert pay.status_code == 200, pay.text
     paid = pay.json()
@@ -143,6 +143,24 @@ async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: 
     shipment = fulfilled["shipments"][0]
     assert shipment["carrier"] == "FastShip"
     assert shipment["tracking_number"] == "TRACK-123"
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_create_customer_order(client: AsyncClient, admin_token: str):
+    _, variant = await _create_base(client, admin_token)
+
+    ro = await client.post(
+        "/api/v1/orders",
+        json={
+            "currency": "ARS",
+            "lines": [
+                {"variant_id": variant["id"], "quantity": 1}
+            ],
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert ro.status_code == 403, ro.text
+    assert ro.json()["detail"] == "Admin users cannot create customer orders"
 
 
 @pytest.mark.asyncio

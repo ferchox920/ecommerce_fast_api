@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.metrics import record_exposure_metrics
 from app.models.engagement import ExposureSlot, ProductRanking
 from app.models.product import Product
 from app.models.promotion import Promotion, PromotionStatus, PromotionType
@@ -28,7 +29,6 @@ CACHE_TTL = getattr(settings, "EXPOSURE_CACHE_TTL", 600)
 _cache = ExposureCache(ttl_seconds=CACHE_TTL)
 
 
-# TODO(observability): agregar métricas 'exposure_hit_ratio', 'ab_variant_conversion'.
 # INTEGRATION(AB): feature flag 'exposure_weights' por cohorte.
 def _cache_key(context: str, user_id: Optional[str], category_id: Optional[UUID]) -> str:
     cat_component = str(category_id) if category_id else "all"
@@ -250,12 +250,29 @@ async def get_exposure(
     category_id: Optional[UUID] = None,
     limit: int = 12,
 ) -> ExposureResponse:
+    started_at = datetime.now(timezone.utc)
     cache_key = _cache_key(context, user_id, category_id)
     cached = _cache.get(cache_key)
     if cached:
-        return ExposureResponse(**cached)
+        response = ExposureResponse(**cached)
+        elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+        record_exposure_metrics(
+            context=context,
+            cache_hit=True,
+            items_served=len(response.mix),
+            elapsed=elapsed,
+        )
+        return response
     payload = await build_exposure(db, context, user_id, category_id, limit)
-    return ExposureResponse(**payload)
+    response = ExposureResponse(**payload)
+    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+    record_exposure_metrics(
+        context=context,
+        cache_hit=False,
+        items_served=len(response.mix),
+        elapsed=elapsed,
+    )
+    return response
 
 
 async def clear_cache(db: AsyncSession, context: Optional[str] = None, user_id: Optional[str] = None, category_id: Optional[UUID] = None) -> None:

@@ -1,7 +1,7 @@
 import uuid
 import enum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Enum, ForeignKey, Numeric, Integer, DateTime, func, Text, JSON
+from sqlalchemy import String, Enum, ForeignKey, Numeric, Integer, DateTime, func, Text, JSON, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.session import Base
@@ -20,6 +20,7 @@ class PaymentStatus(str, enum.Enum):
     pending = "pending"
     authorized = "authorized"
     approved = "approved"
+    partially_refunded = "partially_refunded"
     rejected = "rejected"
     cancelled = "cancelled"
     refunded = "refunded"
@@ -65,6 +66,7 @@ class Order(Base):
     paid_at = mapped_column(DateTime(timezone=True), nullable=True)
     fulfilled_at = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at = mapped_column(DateTime(timezone=True), nullable=True)
+    refunded_at = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = mapped_column(DateTime(timezone=True), onupdate=func.now())
@@ -104,6 +106,9 @@ class PaymentProvider(str, enum.Enum):
 
 class Payment(Base):
     __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("order_id", "idempotency_key", name="uq_payments_order_idempotency_key"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_id: Mapped[uuid.UUID] = mapped_column(
@@ -116,14 +121,60 @@ class Payment(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     init_point: Mapped[str | None] = mapped_column(String(500), nullable=True)
     sandbox_init_point: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
     raw_preference: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_webhook: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    raw_refund: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status_detail: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    refunded_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    refunded_at = mapped_column(DateTime(timezone=True), nullable=True)
+    refund_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    provider_refund_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
 
     created_at = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = mapped_column(DateTime(timezone=True), onupdate=func.now())
 
     order = relationship("Order", back_populates="payments")
+    refunds: Mapped[list["PaymentRefund"]] = relationship(
+        "PaymentRefund", back_populates="payment", cascade="all, delete-orphan"
+    )
+
+
+class PaymentWebhookEvent(Base):
+    __tablename__ = "payment_webhook_events"
+    __table_args__ = (
+        UniqueConstraint("provider", "event_id", name="uq_payment_webhook_provider_event"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("payments.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[PaymentProvider] = mapped_column(Enum(PaymentProvider), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(140), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    processed_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    payment = relationship("Payment")
+
+
+class PaymentRefund(Base):
+    __tablename__ = "payment_refunds"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("payments.id", ondelete="CASCADE"), nullable=False
+    )
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    provider_refund_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    status_detail: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    payment = relationship("Payment", back_populates="refunds")
 
 
 class Shipment(Base):
