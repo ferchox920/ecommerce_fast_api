@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     )
 
     # --- Security & database ---
+    APP_ENV: str = "development"
     SECRET_KEY: str = Field(..., min_length=16)
     REFRESH_SECRET_KEY: str | None = None
     # Cambia el valor predeterminado si usas PostgreSQL por defecto
@@ -188,11 +189,25 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def ensure_async_database_url(self) -> "Settings":
         """Ensure an async URL is always available."""
+        if self.APP_ENV.lower() not in {"development", "dev", "test", "testing", "production", "prod"}:
+            raise ValueError("APP_ENV must be development, test, or production.")
         if not self.ASYNC_DATABASE_URL:
             self.ASYNC_DATABASE_URL = self._derive_async_url(self.DATABASE_URL)
         # Valida que la URL asíncrona no sea None después de derivarla
         if not self.ASYNC_DATABASE_URL:
              raise ValueError(f"Could not derive async database URL from: {self.DATABASE_URL}")
+        if self.APP_ENV.lower() in {"production", "prod"}:
+            if len(self.SECRET_KEY) < 32 or "local-only" in self.SECRET_KEY.lower():
+                raise ValueError("SECRET_KEY must contain at least 32 characters in production.")
+            if not self.REFRESH_SECRET_KEY or "local-only" in self.REFRESH_SECRET_KEY.lower():
+                raise ValueError("REFRESH_SECRET_KEY must be configured in production.")
+            if len(self.REFRESH_SECRET_KEY) < 32:
+                raise ValueError("REFRESH_SECRET_KEY must contain at least 32 characters in production.")
+            if self.SECRET_KEY == self.REFRESH_SECRET_KEY:
+                raise ValueError("Production SECRET_KEY and REFRESH_SECRET_KEY must be different.")
+            database_url = self.DATABASE_URL.lower()
+            if "user:password@" in database_url or "app:app@" in database_url:
+                raise ValueError("DATABASE_URL must not use the example credentials in production.")
         return self
 
     # Validador para admin inicial

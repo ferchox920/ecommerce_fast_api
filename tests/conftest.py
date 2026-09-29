@@ -20,6 +20,7 @@ from typing import Generator
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("ASYNC_DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+os.environ.setdefault("SECRET_KEY", "local-only-test-secret-key-do-not-use")
 
 from app.main import app
 from app.db.session import Base

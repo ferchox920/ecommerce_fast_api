@@ -3,12 +3,15 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.error_handlers import register_exception_handlers
 from app.api.deps import get_current_admin
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.metrics import export_metrics
+from app.db.session_async import AsyncSessionLocal
 from app.api.routers import (
     admin,
     admin_product_questions,
@@ -209,6 +212,26 @@ def root():
     """Endpoint raiz para verificar el estado."""
     return {"status": "ok", "docs_url": "/docs", "redoc_url": "/redoc"}
 
+
+@app.get("/health/live", tags=["health"])
+async def liveness():
+    """Report that the API process is running without probing dependencies."""
+    return {"status": "alive"}
+
+
+@app.get("/health/ready", tags=["health"])
+async def readiness():
+    """Report readiness based on the required database dependency."""
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        return Response(
+            content='{"status":"not_ready","database":"unavailable"}',
+            status_code=503,
+            media_type="application/json",
+        )
+    return {"status": "ready", "database": "available"}
 
 @app.websocket(f"{settings.API_V1_STR}/_ws_echo")
 async def ws_echo(websocket: WebSocket) -> None:
