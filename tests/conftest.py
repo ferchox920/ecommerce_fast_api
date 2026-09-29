@@ -37,14 +37,6 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=sync_
 @pytest.fixture(scope="session", autouse=True)
 def setup_database():
     """Crea las tablas en SQLite solo una vez por sesión de tests."""
-    import app.models.product
-    import app.models.inventory
-    import app.models.supplier
-    import app.models.purchase
-    import app.models.order
-    import app.models.cart
-    import app.models.product_question
-    import app.models.notification
     
     Base.metadata.create_all(bind=sync_engine)
     yield

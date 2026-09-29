@@ -52,19 +52,21 @@ async def test_commerce_api_flow_with_provider_double(monkeypatch):
 
     monkeypatch.setattr(mercado_pago.settings, "MERCADO_PAGO_WEBHOOK_SECRET", "flow-local-secret")
     provider_payment_id = f"payment-{uuid.uuid4()}"
-    monkeypatch.setattr(
-        mercado_pago,
-        "create_checkout_preference",
-        lambda order, idempotency_key=None: {
+    async def fake_preference(order, idempotency_key=None):
+        return {
             "id": f"preference-{uuid.uuid4()}",
             "init_point": "https://example.test/checkout",
-        },
-    )
+        }
+
+    monkeypatch.setattr(mercado_pago, "create_checkout_preference", fake_preference)
     provider_state = {}
-    monkeypatch.setattr(mercado_pago, "get_payment", lambda payment_id: provider_state)
+    async def fake_get_payment(payment_id):
+        return provider_state
+
+    monkeypatch.setattr(mercado_pago, "get_payment", fake_get_payment)
     refund_calls = []
 
-    def fake_refund(payment_id, *, amount, idempotency_key):
+    async def fake_refund(payment_id, *, amount, idempotency_key):
         refund_calls.append((payment_id, amount, idempotency_key))
         return {"id": f"refund-{idempotency_key}", "status_detail": "approved"}
 

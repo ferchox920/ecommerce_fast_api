@@ -143,7 +143,7 @@ async def create_payment_preference(
         return reusable, False
 
     try:
-        preference = mercado_pago.create_checkout_preference(order, idempotency_key=idempotency_key)
+        preference = await mercado_pago.create_checkout_preference(order, idempotency_key=idempotency_key)
     except PaymentProviderConfigurationError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Payment provider is not configured") from exc
     except PaymentProviderPermanentError as exc:
@@ -218,7 +218,7 @@ async def handle_mercado_pago_webhook(
         return {"status": "duplicate"}
 
     try:
-        mp_payment = mercado_pago.get_payment(str(resource_id))
+        mp_payment = await mercado_pago.get_payment(str(resource_id))
     except PaymentProviderPermanentError:
         event.outcome = "ignored"
         await db.flush()
@@ -365,7 +365,7 @@ async def refund_payment(
     refund_data = provider_payload
     if refund_data is None:
         try:
-            refund_data = mercado_pago.refund_payment(
+            refund_data = await mercado_pago.refund_payment(
                 payment.provider_payment_id,
                 amount=float(refund_amount),
                 idempotency_key=idempotency_key or str(uuid.uuid4()),

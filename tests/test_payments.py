@@ -1,10 +1,19 @@
 import hashlib
 import hmac
+import inspect
 import time
 import uuid
 
 import pytest
 from httpx import AsyncClient
+
+
+def _async_double(callback):
+    async def invoke(*args, **kwargs):
+        return callback(*args, **kwargs)
+
+    assert inspect.iscoroutinefunction(invoke)
+    return invoke
 
 
 async def _create_order(client: AsyncClient, admin_token: str, user_token: str):
@@ -92,7 +101,7 @@ async def _create_payment(
     }
     monkeypatch.setattr(
         "app.services.payment_providers.mercado_pago.create_checkout_preference",
-        lambda order_obj, idempotency_key=None: fake_pref,
+        _async_double(lambda order_obj, idempotency_key=None: fake_pref),
     )
     resp = await client.post(
         f"/api/v1/payments/orders/{order_id}",
@@ -127,7 +136,7 @@ async def test_payment_preference_is_idempotent(client: AsyncClient, admin_token
     order, _, _ = await _create_order(client, admin_token, user_token)
     calls = {"count": 0}
 
-    def _fake_create(order_obj, idempotency_key=None):
+    async def _fake_create(order_obj, idempotency_key=None):
         calls["count"] += 1
         assert idempotency_key == "idem-001"
         return {
@@ -182,14 +191,14 @@ async def test_payment_webhook_updates_order_with_valid_signature(
     monkeypatch.setattr("app.services.payment_providers.mercado_pago.settings.MERCADO_PAGO_WEBHOOK_SECRET", "whsec-test")
     monkeypatch.setattr(
         "app.services.payment_providers.mercado_pago.get_payment",
-        lambda payment_id: {
+        _async_double(lambda payment_id: {
             "id": payment_id,
             "status": "approved",
             "status_detail": "accredited",
             "external_reference": order["id"],
             "transaction_amount": order["total_amount"],
             "currency_id": order["currency"],
-        },
+        }),
     )
 
     request_id = "req-valid-001"
@@ -251,7 +260,7 @@ async def test_payment_webhook_is_deduplicated(
 
     calls = {"count": 0}
 
-    def _fake_get_payment(payment_id):
+    async def _fake_get_payment(payment_id):
         calls["count"] += 1
         return {
             "id": payment_id,
@@ -304,14 +313,14 @@ async def test_payment_refund_updates_payment_and_order(
     monkeypatch.setattr("app.services.payment_providers.mercado_pago.settings.MERCADO_PAGO_WEBHOOK_SECRET", "whsec-test")
     monkeypatch.setattr(
         "app.services.payment_providers.mercado_pago.get_payment",
-        lambda payment_id: {
+        _async_double(lambda payment_id: {
             "id": payment_id,
             "status": "approved",
             "status_detail": "accredited",
             "external_reference": order["id"],
             "transaction_amount": order["total_amount"],
             "currency_id": order["currency"],
-        },
+        }),
     )
 
     request_id = "req-refund-approve-001"
@@ -327,11 +336,11 @@ async def test_payment_refund_updates_payment_and_order(
 
     monkeypatch.setattr(
         "app.services.payment_providers.mercado_pago.refund_payment",
-        lambda payment_id, amount=None, idempotency_key=None: {
+        _async_double(lambda payment_id, amount=None, idempotency_key=None: {
             "id": f"refund-{payment_id}",
             "status": "approved",
             "status_detail": "refunded",
-        },
+        }),
     )
 
     refund = await client.post(
@@ -375,14 +384,14 @@ async def test_payment_partial_refund_updates_balance_and_audit(
     monkeypatch.setattr("app.services.payment_providers.mercado_pago.settings.MERCADO_PAGO_WEBHOOK_SECRET", "whsec-test")
     monkeypatch.setattr(
         "app.services.payment_providers.mercado_pago.get_payment",
-        lambda payment_id: {
+        _async_double(lambda payment_id: {
             "id": payment_id,
             "status": "approved",
             "status_detail": "accredited",
             "external_reference": order["id"],
             "transaction_amount": order["total_amount"],
             "currency_id": order["currency"],
-        },
+        }),
     )
 
     approve_request_id = "req-partial-approve-001"
@@ -398,12 +407,12 @@ async def test_payment_partial_refund_updates_balance_and_audit(
 
     monkeypatch.setattr(
         "app.services.payment_providers.mercado_pago.refund_payment",
-        lambda payment_id, amount=None, idempotency_key=None: {
+        _async_double(lambda payment_id, amount=None, idempotency_key=None: {
             "id": f"refund-{payment_id}-partial",
             "status": "approved",
             "status_detail": "partial_refund",
             "amount": amount,
-        },
+        }),
     )
 
     refund = await client.post(
@@ -453,11 +462,11 @@ async def test_admin_cannot_create_customer_payment(client: AsyncClient, admin_t
 
     monkeypatch.setattr(
         "app.services.payment_providers.mercado_pago.create_checkout_preference",
-        lambda order_obj, idempotency_key=None: {
+        _async_double(lambda order_obj, idempotency_key=None: {
             "id": "pref-admin-blocked",
             "init_point": "https://mp.test/init",
             "sandbox_init_point": "https://mp.test/sandbox",
-        },
+        }),
     )
 
     resp = await client.post(
@@ -536,7 +545,7 @@ async def test_webhook_wrong_order_and_out_of_order_event(
         "currency_id": order["currency"],
     }
     monkeypatch.setattr(
-        "app.services.payment_providers.mercado_pago.get_payment", lambda _: provider_state
+        "app.services.payment_providers.mercado_pago.get_payment", _async_double(lambda _: provider_state)
     )
 
     async def send(request_id):
@@ -567,7 +576,8 @@ async def test_webhook_wrong_order_and_out_of_order_event(
     assert all(event.get("signature") is None for event in audit.json()["webhook_events"])
 
 
-def test_provider_distinguishes_retryable_and_permanent_http_errors(monkeypatch):
+@pytest.mark.asyncio
+async def test_provider_distinguishes_retryable_and_permanent_http_errors(monkeypatch):
     import httpx
 
     from app.services.payment_providers import (
@@ -577,10 +587,11 @@ def test_provider_distinguishes_retryable_and_permanent_http_errors(monkeypatch)
     )
 
     monkeypatch.setattr(mercado_pago.settings, "MERCADO_PAGO_ACCESS_TOKEN", "test-token")
-    request = httpx.Request("GET", "https://api.mercadopago.com/v1/payments/123")
+    original_client = httpx.AsyncClient
     for code, expected in ((400, PaymentProviderPermanentError), (429, PaymentProviderTransientError), (503, PaymentProviderTransientError)):
+        transport = httpx.MockTransport(lambda request, code=code: httpx.Response(code, request=request))
         monkeypatch.setattr(
-            mercado_pago.httpx, "get", lambda *args, code=code, **kwargs: httpx.Response(code, request=request)
+            mercado_pago.httpx, "AsyncClient", lambda *, timeout: original_client(transport=transport, timeout=timeout)
         )
         with pytest.raises(expected):
-            mercado_pago.get_payment("123")
+            await mercado_pago.get_payment("123")

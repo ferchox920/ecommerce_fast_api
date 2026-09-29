@@ -164,7 +164,7 @@ async def test_alerts_and_replenishment_suggestion_without_supplier(async_db_ses
     assert hit.missing == 2
 
     sugg = await inventory_service.compute_replenishment_suggestion(async_db_session, supplier_id=None)
-    line = next((l for l in sugg.lines if l.variant_id == v.id), None)
+    line = next((item for item in sugg.lines if item.variant_id == v.id), None)
     assert line is not None
     # regla: max(missing, reorder_qty) con mínimo 1
     assert line.suggested_qty == 5
@@ -205,7 +205,7 @@ async def test_alerts_and_replenishment_filtered_by_supplier(async_db_session: A
 
     sugg = await inventory_service.compute_replenishment_suggestion(async_db_session, supplier_id=supplier_id)
     assert sugg.supplier_id == supplier_id
-    line_ids = {l.variant_id for l in sugg.lines}
+    line_ids = {item.variant_id for item in sugg.lines}
     assert v1.id in line_ids
     assert v2.id not in line_ids
 

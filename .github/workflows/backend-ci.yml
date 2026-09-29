@@ -18,14 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements.txt
       - run: python -m pip install -r requirements.txt
-      - run: python -m ruff check tests/test_configuration.py tests/test_health.py tests/integration/service_checks.py
+      - run: python -m ruff check app tests migrations scripts
       - name: Run unit and API tests
         env:
           APP_ENV: test
@@ -34,7 +34,7 @@ jobs:
           ASYNC_DATABASE_URL: sqlite+aiosqlite:///./test.db
         run: python -m pytest -q --junitxml=unit.xml
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: unit-test-report
           path: unit.xml
@@ -74,8 +74,8 @@ jobs:
       TEST_REDIS_URL: redis://localhost:6379/0
       REDIS_URL: redis://localhost:6379/0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -88,12 +88,48 @@ jobs:
       - name: Verify app, PostgreSQL, Redis, liveness and readiness
         run: python -m pytest -q tests/integration/service_checks.py --junitxml=integration.xml
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: integration-test-report
           path: integration.xml
           if-no-files-found: ignore
           retention-days: 7
+
+  seed-idempotency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: ecommerce
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U app -d ecommerce"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      APP_ENV: test
+      SECRET_KEY: ci-only-test-secret-key-do-not-use
+      DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/ecommerce
+      ASYNC_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/ecommerce
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install -r requirements.txt
+      - name: Migrate empty PostgreSQL database
+        run: python -m alembic upgrade head
+      - name: Verify development seeds, first invocation
+        run: python -m scripts.verify_seed_idempotency
+      - name: Verify development seeds, second invocation
+        run: python -m scripts.verify_seed_idempotency
 
   commerce-integration:
     runs-on: ubuntu-latest
@@ -128,8 +164,8 @@ jobs:
       TEST_REDIS_URL: redis://localhost:6379/0
       REDIS_URL: redis://localhost:6379/0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -154,7 +190,7 @@ jobs:
           pg_isready -h localhost -p 5432 >> commerce-diagnostics.txt 2>&1 || true
           redis-cli -h localhost ping >> commerce-diagnostics.txt 2>&1 || true
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: commerce-integration-report
           path: |

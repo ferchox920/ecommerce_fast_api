@@ -28,12 +28,22 @@ The existing API suite uses SQLite tables created from SQLAlchemy metadata in `t
 
 The test suite emitted SQLAlchemy deprecation warnings during the initial baseline; the captured baseline summary counted 369 warnings, primarily from deprecated `Session.flush(objects)` usage.
 
-## Remaining work for Sol
+## Historical follow-up at the foundation checkpoint
 
 - Resolve the order/payment authorization behavior and align existing tests with intended rules. Several current tests expect customer order creation but receive `403 Not enough permissions`; other blocked-flow assertions fail downstream.
 - Continue the requested functional hardening: stock and reservation concurrency, order creation, payment processing, webhook signatures and event idempotency, refunds, and promotion rules.
 - Review the existing SQLAlchemy `Session.flush(objects)` deprecation warnings.
-- The unit job remains red for the documented functional failures. PostgreSQL/Redis integration and CodeQL are green on the PR run above.
+- At that checkpoint, the unit job was red for the documented functional failures. Later commits resolved them; see the closeout evidence below.
+
+## PR #1 technical closeout (2026-09-29)
+
+- Initial local and remote SHA: `476e25c05dfa66e77c13b2bba190625cdbbebf44`; base remains `main` at `19cebcff8eae1f94c82d705a39c41dc20d2a81de`.
+- Fresh Windows virtual environment, Python 3.13.3: `python -m pip install -r requirements.txt` succeeded; `python -m pip check` found no broken requirements.
+- Initial `python -m ruff check app tests`: **39 errors**. Final `python -m ruff check app tests` and the CI command `python -m ruff check app tests migrations scripts`: **0 errors**. `ruff.toml` checks all four trees; six explicit E402 exceptions are only for entry points that establish the import path or test environment before importing the app. No directory is excluded.
+- SQLite suite: **88 passed, 0 failed, 0 skipped**; one Starlette/AnyIO deprecation warning remains. Mercado Pago is tested through async HTTP doubles with no provider traffic.
+- Disposable PostgreSQL 16 and Redis 7: migrations from an empty database reached `e2b7a93c4d10 (head)`. Service checks: **3 passed**. Inventory, refund and commercial flow: **8 passed** on a separate fresh database without seed data.
+- On an empty migrated PostgreSQL database, `python -m scripts.verify_seed_idempotency` was invoked twice. Each invocation ran the three documented seeds twice. The 12 relevant table counts stayed identical across all four passes: users 4, categories 2, brands 2, suppliers 2, products 3, variants 5, images 6, questions 3, wishes 3, movements 3, promotions 2, promotion-product links 1. Referential and duplicate-key checks passed; external connections: **0**.
+- GitHub Actions use official Node.js 24 action majors: [checkout v6](https://github.com/actions/checkout/releases/tag/v6.0.0), [setup-python v6](https://github.com/actions/setup-python/releases/tag/v6.0.0), [upload-artifact v6](https://github.com/actions/upload-artifact/releases/tag/v6.0.0), and [CodeQL v4](https://github.com/github/codeql-action/releases). Hosted CI evidence and the final SHA are recorded in PR #1 after publication.
 
 ## Structural decisions to retain
 

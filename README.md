@@ -70,6 +70,8 @@ This applies the full schema to an empty PostgreSQL database. Seeds are opt-in a
 
 The seeds use fictitious `.test` accounts and sample catalog content. They are designed to be re-run and do not provision provider accounts or call payment, image-hosting, or email APIs. Treat the seeded user credentials as public development data.
 
+To verify idempotency on a fresh, migrated PostgreSQL database, run `python -m scripts.verify_seed_idempotency` twice. Each invocation executes the three documented seeds twice, checks row counts and references, and rejects external connections. Use a disposable database; this command inserts the sample data.
+
 ## Run the API
 
 ```powershell
@@ -87,6 +89,7 @@ Open `/docs` for the interactive API documentation.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check app tests migrations scripts
 ```
 
 The main suite uses SQLite test fixtures. PostgreSQL migrations and Redis checks run separately in GitHub Actions against disposable services. Locally, after starting Compose and applying migrations, configure `DATABASE_URL`, `ASYNC_DATABASE_URL`, `REDIS_URL`, and `TEST_REDIS_URL` for your local services, then run:

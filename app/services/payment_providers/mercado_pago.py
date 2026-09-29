@@ -38,7 +38,7 @@ def _headers() -> dict:
     }
 
 
-def create_checkout_preference(order: Order, *, idempotency_key: str | None = None) -> dict:
+async def create_checkout_preference(order: Order, *, idempotency_key: str | None = None) -> dict:
     items = [
         {
             "id": str(line.variant_id),
@@ -72,12 +72,10 @@ def create_checkout_preference(order: Order, *, idempotency_key: str | None = No
         headers = _headers()
         if idempotency_key:
             headers["X-Idempotency-Key"] = idempotency_key
-        response = httpx.post(
-            f"{API_BASE_URL}/checkout/preferences",
-            json=payload,
-            headers=headers,
-            timeout=15.0,
-        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{API_BASE_URL}/checkout/preferences", json=payload, headers=headers
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         _raise_provider_status(exc)
@@ -87,17 +85,17 @@ def create_checkout_preference(order: Order, *, idempotency_key: str | None = No
     return response.json()
 
 
-def refund_payment(
+async def refund_payment(
     payment_id: str, *, amount: float | None = None, idempotency_key: str
 ) -> dict:
     payload = {"amount": amount} if amount is not None else None
     try:
-        response = httpx.post(
-            f"{API_BASE_URL}/v1/payments/{payment_id}/refunds",
-            json=payload,
-            headers={**_headers(), "X-Idempotency-Key": idempotency_key},
-            timeout=15.0,
-        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{API_BASE_URL}/v1/payments/{payment_id}/refunds",
+                json=payload,
+                headers={**_headers(), "X-Idempotency-Key": idempotency_key},
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         _raise_provider_status(exc)
@@ -107,13 +105,12 @@ def refund_payment(
     return response.json()
 
 
-def get_payment(payment_id: str) -> dict:
+async def get_payment(payment_id: str) -> dict:
     try:
-        response = httpx.get(
-            f"{API_BASE_URL}/v1/payments/{payment_id}",
-            headers=_headers(),
-            timeout=15.0,
-        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{API_BASE_URL}/v1/payments/{payment_id}", headers=_headers()
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         _raise_provider_status(exc)

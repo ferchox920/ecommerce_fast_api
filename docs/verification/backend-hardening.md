@@ -36,7 +36,7 @@ The integration files have explicit names so the SQLite unit command does not co
 | Webhook is authentic and bound to its order | HMAC over URL `data.id`, request ID, timestamp; provider lookup checks external reference, amount, currency | Missing, changed, stale, unconfigured, wrong-order, duplicate, and out-of-order cases in `tests/test_payments.py`. |
 | API journey works on migrated PostgreSQL | Real app sessions and Redis, controlled Mercado Pago boundary | Product, stock, login, cart, promotion, order, payment, webhook, notification, access denial, and refund in `commerce_flow.py`. |
 
-Executed locally against this worktree: SQLite suite **84 passed**; empty PostgreSQL migration through `e2b7a93c4d10` succeeded; PostgreSQL/Redis integration suite **11 passed**. Hosted CI must be checked against the final pushed commit.
+Executed locally for the final closeout: SQLite suite **88 passed, 0 failed, 0 skipped**; empty PostgreSQL migration through `e2b7a93c4d10` succeeded; PostgreSQL/Redis service checks **3 passed** and commercial integration **8 passed**. The seed verification ran four passes across two invocations on a separate migrated PostgreSQL database. Hosted CI evidence for the final SHA is recorded in PR #1.
 
 ## Review points
 
@@ -49,3 +49,5 @@ Executed locally against this worktree: SQLite suite **84 passed**; empty Postgr
 ## Limits
 
 The product and category percentage discount path is demonstrated; customer and loyalty promotion eligibility does not imply checkout application. A client must reuse its idempotency key on retries. A timeout after a provider refund requires reconciliation with Mercado Pago using the same key. Unit tests run on SQLite, while transactional and concurrency guarantees are evaluated on PostgreSQL. Provider APIs are simulated in CI.
+
+Mercado Pago preference creation, payment lookup and refunds now await `httpx.AsyncClient` requests, each with a 15-second timeout and an automatically closed client. The refund provider call still occurs while the PostgreSQL payment row is locked in the caller's transaction; a slow provider can therefore hold that lock for up to the timeout. This local change does not add distributed refund orchestration. The unit suite validates seeded image URL structure offline; it does not test the remote image host's availability.

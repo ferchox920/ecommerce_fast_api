@@ -26,7 +26,7 @@ async def test_two_refunds_cannot_exceed_paid_amount(monkeypatch):
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     calls = []
 
-    def fake_refund(payment_id, *, amount, idempotency_key):
+    async def fake_refund(payment_id, *, amount, idempotency_key):
         calls.append((amount, idempotency_key))
         return {"id": f"refund-{idempotency_key}", "status_detail": "approved"}
 
