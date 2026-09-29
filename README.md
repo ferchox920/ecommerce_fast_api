@@ -7,9 +7,29 @@ Backend HTTP API for a store catalog and its customer and administrative workflo
 - FastAPI and Pydantic for HTTP and validation.
 - SQLAlchemy async sessions with PostgreSQL as the application database.
 - Alembic for structural migrations.
-- Redis is optional for rate limits, token blacklist, caching, and local integration checks.
+- Redis is used for rate limits and token blacklist where configured; the commercial integration job runs it alongside PostgreSQL.
 - Celery tasks exist for background email/report work; this local setup does not start a worker.
-- Most existing API tests use SQLite and create their schema from SQLAlchemy metadata. The PostgreSQL migration checks are separate.
+- The unit API suite uses SQLite. A separate CI job exercises the real API, PostgreSQL transactions, Redis readiness, and a deterministic Mercado Pago double.
+
+## Demonstrated commercial flow
+
+```mermaid
+flowchart LR
+    Catalog[Catalog and variants] --> Cart[Customer cart]
+    Cart --> Order[Order and stock reservation]
+    Order --> Preference[Mercado Pago preference]
+    Preference --> Webhook[Signed webhook]
+    Webhook --> Sale[Paid order and stock sale]
+    Sale --> Refund[Partial or full refund]
+    Order --> Notification[Committed notification]
+    Sale --> Notification
+```
+
+The [commercial API test](tests/integration/commerce_flow.py) creates a product, receives inventory, authenticates users, builds a cart, applies a product promotion, creates an order, simulates a payment preference and a signed webhook, then checks the stock sale, notification, duplicate webhook, access denial, and idempotent partial refund. It uses the application and migrated PostgreSQL schema; only Mercado Pago calls are replaced by a controlled double.
+
+PostgreSQL row locks serialize stock changes per variant and refunds per payment. Database constraints enforce nonnegative stock and `reserved <= on_hand`. Inventory movements record signed adjustments and optional idempotency keys. Direct sales cannot consume an order's reservation. A cart can be converted once; direct order creation accepts an `Idempotency-Key` header. Product prices and promotion discounts are calculated at checkout rather than accepted from request totals. Order lines retain their unit price and line total at purchase time.
+
+Webhook validation uses Mercado Pago's `x-signature`, `x-request-id`, and URL `data.id` contract, including millisecond timestamps. The handler retrieves the payment from Mercado Pago, checks its order reference, amount, and currency, then applies a legal transition. Duplicate and stale events do not repeat effects. Refund requests accept `Idempotency-Key`; the key is forwarded to Mercado Pago and stored with the refund record. Provider failures leave the database transaction uncommitted. Notification delivery is queued until commit. See [Mercado Pago's webhook contract](https://www.mercadopago.com.ar/developers/en/docs/wallet-connect/notifications) and [idempotency guidance](https://www.mercadopago.com.ar/developers/en/news/2023/01/04/Idempotency-key-usage-will-be-mandatory).
 
 ## Requirements
 
@@ -69,17 +89,21 @@ Open `/docs` for the interactive API documentation.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The main suite uses SQLite test fixtures. The last measured run before this foundation work collected 70 cases; the updated count and result are recorded in the [verification evidence](docs/verification/backend-foundation.md). PostgreSQL migrations and Redis checks run separately in GitHub Actions against disposable services. Locally, after starting Compose and applying migrations, set `TEST_REDIS_URL=redis://localhost:6379/0` and run:
+The main suite uses SQLite test fixtures. PostgreSQL migrations and Redis checks run separately in GitHub Actions against disposable services. Locally, after starting Compose and applying migrations, configure `DATABASE_URL`, `ASYNC_DATABASE_URL`, `REDIS_URL`, and `TEST_REDIS_URL` for your local services, then run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests/integration/service_checks.py
+.\.venv\Scripts\python.exe -m pytest -q tests/integration/inventory_concurrency.py tests/integration/refund_concurrency.py tests/integration/commerce_flow.py
 ```
+
+For the Compose defaults, the URLs are `postgresql+psycopg://app:app@localhost:5433/ecommerce`, `postgresql+asyncpg://app:app@localhost:5433/ecommerce`, and `redis://localhost:6379/0`. Run `alembic upgrade head` against an empty PostgreSQL database before the tests. The [technical evaluation guide](docs/verification/backend-hardening.md) records the exact commands and observed local evidence.
 
 Dependencies are fully pinned in `requirements.txt`; install with `python -m pip install -r requirements.txt`. Dependabot checks pip and GitHub Actions weekly.
 
 ## Known limits
 
-- Unit tests currently expose existing order/payment authorization failures; see verification evidence. This foundation work does not change their business behavior.
-- The main suite creates tables through ORM metadata; it is not evidence that production schema migrations are correct. Use the dedicated PostgreSQL migration job for that check.
-- No deployment, coverage percentage, production account, or third-party payment credentials are included.
-- Payment correctness, inventory concurrency, order creation, webhook security, event idempotency, refunds, and promotion rules remain follow-up hardening work.
+- Only product and category promotions with `discount_percent` are applied at checkout. Other promotion types have eligibility endpoints but are not checkout discounts.
+- Full refunds restore item stock only for paid, unfulfilled orders. Partial refunds do not automatically restore items.
+- Guest cart tokens act as possession credentials. Keep them private; this API does not add an account recovery flow for guests.
+- The main suite uses ORM-created SQLite tables. Use the dedicated PostgreSQL job to verify migrations, concurrency, and the commercial API path.
+- External payment calls are simulated in tests. No production credentials, deployment, coverage percentage, or performance claim is included.
