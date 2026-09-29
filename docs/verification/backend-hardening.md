@@ -36,12 +36,13 @@ The integration files have explicit names so the SQLite unit command does not co
 | Webhook is authentic and bound to its order | HMAC over URL `data.id`, request ID, timestamp; provider lookup checks external reference, amount, currency | Missing, changed, stale, unconfigured, wrong-order, duplicate, and out-of-order cases in `tests/test_payments.py`. |
 | API journey works on migrated PostgreSQL | Real app sessions and Redis, controlled Mercado Pago boundary | Product, stock, login, cart, promotion, order, payment, webhook, notification, access denial, and refund in `commerce_flow.py`. |
 
-Executed locally against this worktree: SQLite suite **84 passed**; empty PostgreSQL migration through `d1a0c5e87b39` succeeded; PostgreSQL/Redis integration suite **11 passed**. Hosted CI must be checked against the final pushed commit.
+Executed locally against this worktree: SQLite suite **84 passed**; empty PostgreSQL migration through `e2b7a93c4d10` succeeded; PostgreSQL/Redis integration suite **11 passed**. Hosted CI must be checked against the final pushed commit.
 
 ## Review points
 
 - `app/services/inventory_service.py` owns stock transitions. `product_service/variants.py` routes administrative stock edits into audited transitions.
 - `app/services/order_service.py` computes the price and promotional discount, reserves stock, and marks payment transitions in the caller's transaction.
+- New order lines snapshot SKU and product title as well as price; the snapshot migration backfills existing lines from the current catalog.
 - `app/services/payment_service.py` verifies provider data and serializes refunds. `payment_providers/mercado_pago.py` contains the provider-specific HTTP and HMAC contract.
 - `app/services/notification_service.py` queues delivery until commit. Database notification rows and commercial effects share the transaction.
 

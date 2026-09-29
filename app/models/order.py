@@ -103,6 +103,8 @@ class OrderLine(Base):
     variant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="RESTRICT"), nullable=False
     )
+    sku_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    product_title_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)

@@ -28,6 +28,8 @@ class OrderCreate(BaseModel):
 class OrderLineRead(BaseModel):
     id: UUID
     variant_id: UUID
+    sku_snapshot: str | None
+    product_title_snapshot: str | None
     quantity: int
     unit_price: float
     line_total: float

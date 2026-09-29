@@ -159,6 +159,8 @@ async def _add_line(
     line = OrderLine(
         order=order,
         variant_id=variant.id,
+        sku_snapshot=variant.sku,
+        product_title_snapshot=product.title,
         quantity=payload.quantity,
         unit_price=unit_price,
         line_total=unit_price * payload.quantity,

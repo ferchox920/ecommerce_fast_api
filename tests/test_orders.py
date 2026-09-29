@@ -2,6 +2,7 @@
 from httpx import AsyncClient
 import uuid
 from datetime import datetime, timezone
+from app.models.product import Product, ProductVariant
 
 
 async def _create_base(client: AsyncClient, admin_token: str):
@@ -52,8 +53,8 @@ async def _create_base(client: AsyncClient, admin_token: str):
 
 
 @pytest.mark.asyncio
-async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_token: str):
-    _, variant = await _create_base(client, admin_token)
+async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_token: str, db_session):
+    product, variant = await _create_base(client, admin_token)
 
     ro = await client.post(
         "/api/v1/orders",
@@ -72,6 +73,14 @@ async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_
     assert len(order["lines"]) == 1
     assert order["lines"][0]["quantity"] == 2
     assert order["total_amount"] == 3000.0
+    assert order["lines"][0]["sku_snapshot"] == variant["sku"]
+    assert order["lines"][0]["product_title_snapshot"] == product["title"]
+
+    stored_product = db_session.get(Product, uuid.UUID(product["id"]))
+    stored_variant = db_session.get(ProductVariant, uuid.UUID(variant["id"]))
+    stored_product.title = "Renamed product"
+    stored_variant.sku = f"RENAMED-{uuid.uuid4()}"
+    db_session.commit()
 
     rg = await client.get(
         f"/api/v1/orders/{order['id']}",
@@ -82,6 +91,8 @@ async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_
     assert og["id"] == order["id"]
     assert og["payment_status"] == "pending"
     assert og["shipping_status"] == "pending"
+    assert og["lines"][0]["sku_snapshot"] == variant["sku"]
+    assert og["lines"][0]["product_title_snapshot"] == product["title"]
 
 
 @pytest.mark.asyncio
