@@ -36,7 +36,7 @@ The integration files have explicit names so the SQLite unit command does not co
 | Webhook is authentic and bound to its order | HMAC over URL `data.id`, request ID, timestamp; provider lookup checks external reference, amount, currency | Missing, changed, stale, unconfigured, wrong-order, duplicate, and out-of-order cases in `tests/test_payments.py`. |
 | API journey works on migrated PostgreSQL | Real app sessions and Redis, controlled Mercado Pago boundary | Product, stock, login, cart, promotion, order, payment, webhook, notification, access denial, and refund in `commerce_flow.py`. |
 
-Executed locally against the final worktree: SQLite suite **82 passed**; empty PostgreSQL migration through `d1a0c5e87b39` succeeded; PostgreSQL/Redis integration suite **11 passed**. Hosted CI evidence must be checked against the final pushed commit.
+Executed locally against this worktree: SQLite suite **84 passed**; empty PostgreSQL migration through `d1a0c5e87b39` succeeded; PostgreSQL/Redis integration suite **11 passed**. Hosted CI must be checked against the final pushed commit.
 
 ## Review points
 
