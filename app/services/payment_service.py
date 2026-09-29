@@ -26,6 +26,7 @@ from app.services.exceptions import ConflictError, DomainValidationError, Resour
 from app.services.payment_providers import (
     PaymentProviderConfigurationError,
     PaymentProviderError,
+    PaymentProviderPermanentError,
     mercado_pago,
 )
 
@@ -129,6 +130,8 @@ async def create_payment_preference(
     *,
     idempotency_key: str | None = None,
 ) -> tuple[Payment, bool]:
+    order = await db.get(Order, order.id, with_for_update=True, populate_existing=True)
+    await db.refresh(order, attribute_names=["lines"])
     if order.status not in [OrderStatus.pending_payment, OrderStatus.draft]:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Order is not ready to pay")
     if not order.lines:
@@ -142,9 +145,11 @@ async def create_payment_preference(
     try:
         preference = mercado_pago.create_checkout_preference(order, idempotency_key=idempotency_key)
     except PaymentProviderConfigurationError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Payment provider is not configured") from exc
+    except PaymentProviderPermanentError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Payment provider rejected preference") from exc
     except PaymentProviderError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Payment provider temporarily unavailable") from exc
 
     preference_id = preference.get("id") or preference.get("preference_id")
 
@@ -158,7 +163,7 @@ async def create_payment_preference(
         init_point=preference.get("init_point"),
         sandbox_init_point=preference.get("sandbox_init_point"),
         idempotency_key=idempotency_key,
-        raw_preference=preference,
+        raw_preference=None,
     )
 
     db.add(payment)
@@ -184,21 +189,26 @@ async def handle_mercado_pago_webhook(
     *,
     signature_header: str | None = None,
     request_id: str | None = None,
+    resource_id: str | None = None,
 ) -> dict:
     if not mercado_pago.validate_webhook_signature(
-        payload,
+        resource_id,
         signature_header=signature_header,
         request_id=request_id,
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook signature")
+
+    data = payload.get("data") or {}
+    if str(data.get("id", "")).lower() != str(resource_id).lower():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook resource mismatch")
 
     event_id = _normalize_event_id(payload, request_id)
     event = PaymentWebhookEvent(
         provider=PaymentProvider.mercado_pago,
         event_id=event_id,
         request_id=request_id,
-        signature=signature_header,
-        payload=payload,
+        event_type=str(payload.get("type") or payload.get("action") or "payment")[:80],
+        outcome="received",
     )
     db.add(event)
     try:
@@ -207,39 +217,66 @@ async def handle_mercado_pago_webhook(
         await db.rollback()
         return {"status": "duplicate"}
 
-    data = payload.get("data") or {}
-    payment_id = data.get("id") or payload.get("resource")
-    if isinstance(payment_id, str) and "/" in payment_id:
-        payment_id = payment_id.rstrip("/").split("/")[-1]
-    if not payment_id:
-        return {"status": "ignored"}
-
-    stmt = select(Payment.id).where(Payment.provider_payment_id == str(payment_id)).limit(1)
-    result = await db.execute(stmt)
-    stored_payment_id = result.scalar_one_or_none()
-    if not stored_payment_id:
-        return {"status": "ignored"}
-
-    payment = await db.get(Payment, stored_payment_id)
-    if not payment:
-        return {"status": "ignored"}
-    order = await order_service.get_order(db, str(payment.order_id))
-    event.payment_id = payment.id
-    db.add(event)
-
     try:
-        mp_payment = mercado_pago.get_payment(str(payment_id))
-    except PaymentProviderError as exc:
-        payment.last_webhook = payload
-        payment.status_detail = f"error: {exc}"
-        db.add(payment)
+        mp_payment = mercado_pago.get_payment(str(resource_id))
+    except PaymentProviderPermanentError:
+        event.outcome = "ignored"
         await db.flush()
-        return {"status": "provider_error"}
+        return {"status": "ignored"}
+    except PaymentProviderError as exc:
+        # Roll back the event too; Mercado Pago must be able to retry it.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Payment provider temporarily unavailable") from exc
+
+    if str(mp_payment.get("id")) != str(resource_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Provider payment identifier mismatch")
+    try:
+        referenced_order_id = uuid.UUID(str(mp_payment.get("external_reference")))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Provider order reference mismatch") from exc
+    order = await order_service.get_order(db, str(referenced_order_id))
+    if (
+        _money(mp_payment.get("transaction_amount")) != _money(order.total_amount)
+        or mp_payment.get("currency_id") != order.currency
+    ):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Provider payment amount or currency mismatch")
+
+    payment = await db.scalar(
+        select(Payment)
+        .where(Payment.order_id == order.id)
+        .where(Payment.provider == PaymentProvider.mercado_pago)
+        .order_by(Payment.created_at.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if payment is None or _money(payment.amount) != _money(order.total_amount):
+        raise HTTPException(status.HTTP_409_CONFLICT, "No matching payment for order")
+    if (
+        payment.status not in (PaymentStatus.pending, PaymentStatus.authorized)
+        and payment.provider_payment_id != str(resource_id)
+    ):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Provider payment identifier mismatch")
+    event.payment_id = payment.id
+    payment.provider_payment_id = str(resource_id)
 
     payment_status = _map_mp_status(mp_payment.get("status"))
-    payment.status_detail = mp_payment.get("status_detail")
-    payment.last_webhook = payload
-    payment.provider_payment_id = str(mp_payment.get("id") or payment_id)
+    if payment.status in (
+        PaymentStatus.approved,
+        PaymentStatus.partially_refunded,
+        PaymentStatus.refunded,
+    ) and payment_status in (
+        PaymentStatus.pending,
+        PaymentStatus.authorized,
+        PaymentStatus.rejected,
+        PaymentStatus.cancelled,
+    ):
+        event.outcome = "stale"
+        await db.flush()
+        return {"status": "stale"}
+    if payment.status == PaymentStatus.refunded and payment_status == PaymentStatus.approved:
+        event.outcome = "stale"
+        await db.flush()
+        return {"status": "stale"}
+    payment.status_detail = str(mp_payment.get("status_detail") or "")[:120] or None
 
     if payment_status == PaymentStatus.approved and order.status != OrderStatus.paid:
         payment.status = payment_status
@@ -271,6 +308,7 @@ async def handle_mercado_pago_webhook(
 
     await db.flush()
     await db.refresh(payment)
+    event.outcome = "processed"
     return {"status": "processed"}
 
 
@@ -282,7 +320,20 @@ async def refund_payment(
     reason: str | None = None,
     provider_payload: dict | None = None,
     restock_items: bool | None = None,
+    idempotency_key: str | None = None,
 ) -> Payment:
+    payment = await db.get(Payment, payment.id, with_for_update=True, populate_existing=True)
+    if idempotency_key:
+        prior = await db.scalar(
+            select(PaymentRefund).where(
+                PaymentRefund.payment_id == payment.id,
+                PaymentRefund.idempotency_key == idempotency_key,
+            )
+        )
+        if prior is not None:
+            if (amount is not None and _money(amount) != _money(prior.amount)) or prior.reason != reason:
+                raise ConflictError("Idempotency key was used for a different refund")
+            return payment
     if payment.status == PaymentStatus.refunded and _money(payment.refunded_amount) >= _money(payment.amount):
         return payment
     if payment.status not in [PaymentStatus.approved, PaymentStatus.partially_refunded]:
@@ -314,11 +365,17 @@ async def refund_payment(
     refund_data = provider_payload
     if refund_data is None:
         try:
-            refund_data = mercado_pago.refund_payment(payment.provider_payment_id, amount=float(refund_amount))
+            refund_data = mercado_pago.refund_payment(
+                payment.provider_payment_id,
+                amount=float(refund_amount),
+                idempotency_key=idempotency_key or str(uuid.uuid4()),
+            )
         except PaymentProviderConfigurationError as exc:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Payment provider is not configured") from exc
+        except PaymentProviderPermanentError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Payment provider rejected refund") from exc
         except PaymentProviderError as exc:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Payment provider temporarily unavailable") from exc
 
     if should_restock:
         await db.refresh(order, attribute_names=["lines"])
@@ -333,8 +390,9 @@ async def refund_payment(
         amount=float(refund_amount),
         reason=reason,
         provider_refund_id=str(refund_data.get("id")) if refund_data.get("id") else None,
+        idempotency_key=idempotency_key,
         status_detail=refund_data.get("status_detail"),
-        raw_response=refund_data,
+        raw_response=None,
     )
     db.add(refund_row)
 
@@ -344,7 +402,7 @@ async def refund_payment(
     payment.status_detail = refund_data.get("status_detail") or (
         "partially_refunded" if payment.status == PaymentStatus.partially_refunded else "refunded"
     )
-    payment.raw_refund = refund_data
+    payment.raw_refund = None
     payment.refunded_at = _utcnow() if payment.status == PaymentStatus.refunded else None
     payment.refund_reason = reason
     payment.provider_refund_id = str(refund_data.get("id")) if refund_data.get("id") else payment.provider_refund_id

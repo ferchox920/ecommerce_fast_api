@@ -9,12 +9,19 @@ import httpx
 from app.core.config import settings
 from app.models.order import Order
 from app.services.payment_providers import (
-    PaymentProviderError,
     PaymentProviderConfigurationError,
+    PaymentProviderPermanentError,
+    PaymentProviderTransientError,
 )
 
 
 API_BASE_URL = "https://api.mercadopago.com"
+
+
+def _raise_provider_status(exc: httpx.HTTPStatusError) -> None:
+    if exc.response.status_code == 429 or exc.response.status_code >= 500:
+        raise PaymentProviderTransientError("Mercado Pago temporarily unavailable") from exc
+    raise PaymentProviderPermanentError("Mercado Pago rejected the request") from exc
 
 
 def _get_access_token() -> str:
@@ -73,27 +80,29 @@ def create_checkout_preference(order: Order, *, idempotency_key: str | None = No
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise PaymentProviderError(f"Mercado Pago error: {exc.response.text}") from exc
+        _raise_provider_status(exc)
     except httpx.HTTPError as exc:
-        raise PaymentProviderError(f"Mercado Pago connection error: {exc}") from exc
+        raise PaymentProviderTransientError("Mercado Pago connection failed") from exc
 
     return response.json()
 
 
-def refund_payment(payment_id: str, *, amount: float | None = None) -> dict:
+def refund_payment(
+    payment_id: str, *, amount: float | None = None, idempotency_key: str
+) -> dict:
     payload = {"amount": amount} if amount is not None else None
     try:
         response = httpx.post(
             f"{API_BASE_URL}/v1/payments/{payment_id}/refunds",
             json=payload,
-            headers=_headers(),
+            headers={**_headers(), "X-Idempotency-Key": idempotency_key},
             timeout=15.0,
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise PaymentProviderError(f"Mercado Pago error: {exc.response.text}") from exc
+        _raise_provider_status(exc)
     except httpx.HTTPError as exc:
-        raise PaymentProviderError(f"Mercado Pago connection error: {exc}") from exc
+        raise PaymentProviderTransientError("Mercado Pago connection failed") from exc
 
     return response.json()
 
@@ -107,15 +116,15 @@ def get_payment(payment_id: str) -> dict:
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise PaymentProviderError(f"Mercado Pago error: {exc.response.text}") from exc
+        _raise_provider_status(exc)
     except httpx.HTTPError as exc:
-        raise PaymentProviderError(f"Mercado Pago connection error: {exc}") from exc
+        raise PaymentProviderTransientError("Mercado Pago connection failed") from exc
 
     return response.json()
 
 
 def validate_webhook_signature(
-    payload: dict,
+    resource_id: str | None,
     *,
     signature_header: str | None,
     request_id: str | None,
@@ -123,8 +132,8 @@ def validate_webhook_signature(
 ) -> bool:
     secret = settings.MERCADO_PAGO_WEBHOOK_SECRET
     if not secret:
-        return True
-    if not signature_header or not request_id:
+        return False
+    if not signature_header or not request_id or not resource_id:
         return False
 
     signature_parts: dict[str, str] = {}
@@ -145,17 +154,10 @@ def validate_webhook_signature(
         return False
 
     max_age = tolerance_seconds or settings.MERCADO_PAGO_WEBHOOK_TOLERANCE_SECONDS
-    if max_age > 0 and abs(int(time.time()) - ts_int) > max_age:
+    timestamp_seconds = ts_int / 1000 if ts_int >= 10**12 else ts_int
+    if max_age > 0 and abs(time.time() - timestamp_seconds) > max_age:
         return False
-
-    data = payload.get("data") or {}
-    resource_id = data.get("id") or payload.get("resource")
-    if isinstance(resource_id, str) and "/" in resource_id:
-        resource_id = resource_id.rstrip("/").split("/")[-1]
-    if not resource_id:
-        return False
-
-    manifest = f"id:{resource_id};request-id:{request_id};ts:{ts};"
+    manifest = f"id:{resource_id.lower()};request-id:{request_id};ts:{ts};"
     expected = hmac.new(
         secret.encode("utf-8"),
         msg=manifest.encode("utf-8"),
