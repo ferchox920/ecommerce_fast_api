@@ -13,6 +13,7 @@ class MovementCreate(BaseModel):
     type: MovementType
     quantity: int = Field(gt=0)  # la API siempre manda positivo
     reason: str | None = None
+    idempotency_key: str | None = Field(default=None, max_length=120)
 
 
 class MovementRead(BaseModel):

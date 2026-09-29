@@ -132,18 +132,18 @@ async def test_reserve_and_release_validation(async_db_session: AsyncSession):
 async def test_commit_sale_from_reserved_and_onhand(async_db_session: AsyncSession):
     v = await _mk_variant(async_db_session, on_hand=10, reserved=3)
 
-    # vender 2 -> consume reserved y on_hand
+    # La venta directa no consume reservas de pedidos.
     await inventory_service.commit_sale(async_db_session, v, 2, reason="venta-1")
     await async_db_session.commit()
     await async_db_session.refresh(v)
-    assert v.stock_reserved == 1
+    assert v.stock_reserved == 3
     assert v.stock_on_hand == 8  # 10 - 2
 
-    # vender 2 -> consume el último reservado y uno de on_hand
+    # Otra venta directa consume sólo stock disponible.
     await inventory_service.commit_sale(async_db_session, v, 2, reason="venta-2")
     await async_db_session.commit()
     await async_db_session.refresh(v)
-    assert v.stock_reserved == 0
+    assert v.stock_reserved == 3
     assert v.stock_on_hand == 6  # 8 - 2
 
     # vender más que on_hand -> 400

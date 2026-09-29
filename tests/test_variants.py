@@ -147,13 +147,21 @@ async def test_update_variant_stock_ok_y_luego_invalido(client: AsyncClient, adm
     # update válido
     r_ok = await client.put(
         f"/api/v1/products/variants/{variant['id']}",
-        json={"stock_on_hand": 4, "stock_reserved": 1},
+        json={"stock_on_hand": 4},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert r_ok.status_code == 200, r_ok.text
     v2 = r_ok.json()
     assert v2["stock_on_hand"] == 4
-    assert v2["stock_reserved"] == 1
+    assert v2["stock_reserved"] == 0
+
+    reserved = await client.post(
+        f"/api/v1/products/variants/{variant['id']}/stock/reserve",
+        json={"type": "reserve", "quantity": 1, "reason": "test reservation"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert reserved.status_code == 200, reserved.text
+    assert reserved.json()["stock_reserved"] == 1
 
     # update inválido: reservado > on_hand
     r_bad = await client.put(
@@ -162,7 +170,7 @@ async def test_update_variant_stock_ok_y_luego_invalido(client: AsyncClient, adm
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert r_bad.status_code == 400
-    assert "stock_reserved" in r_bad.text.lower()
+    assert "reserve" in r_bad.text.lower()
 
 
 @pytest.mark.asyncio

@@ -241,7 +241,7 @@ async def admin_receive_stock(
         raise HTTPException(status_code=404, detail="Variant not found")
     if payload.type != "receive":
         raise HTTPException(status_code=400, detail="type debe ser 'receive'")
-    updated = await product_service.receive_stock(db, var, payload.quantity, payload.reason)
+    updated = await product_service.receive_stock(db, var, payload.quantity, payload.reason, payload.idempotency_key)
     await commit_async(db)
     return updated
 
@@ -260,7 +260,7 @@ async def admin_reserve_stock(
         raise HTTPException(status_code=404, detail="Variant not found")
     if payload.type != "reserve":
         raise HTTPException(status_code=400, detail="type debe ser 'reserve'")
-    updated = await product_service.reserve_stock(db, var, payload.quantity, payload.reason)
+    updated = await product_service.reserve_stock(db, var, payload.quantity, payload.reason, payload.idempotency_key)
     await commit_async(db)
     return updated
 
@@ -279,7 +279,7 @@ async def admin_release_stock(
         raise HTTPException(status_code=404, detail="Variant not found")
     if payload.type != "release":
         raise HTTPException(status_code=400, detail="type debe ser 'release'")
-    updated = await product_service.release_stock(db, var, payload.quantity, payload.reason)
+    updated = await product_service.release_stock(db, var, payload.quantity, payload.reason, payload.idempotency_key)
     await commit_async(db)
     return updated
 
@@ -298,7 +298,7 @@ async def admin_commit_sale(
         raise HTTPException(status_code=404, detail="Variant not found")
     if payload.type != "sale":
         raise HTTPException(status_code=400, detail="type debe ser 'sale'")
-    updated = await product_service.commit_sale(db, var, payload.quantity, payload.reason)
+    updated = await product_service.commit_sale(db, var, payload.quantity, payload.reason, payload.idempotency_key)
     await commit_async(db)
     return updated
 
@@ -310,13 +310,14 @@ async def admin_adjust_stock(
     variant_id: UUID = Path(..., description="UUID de la variante"),
     delta: int = Query(...),
     reason: str | None = Query(None),
+    idempotency_key: str | None = Query(None, max_length=120),
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Security(get_current_user, scopes=["products:write"]),
 ):
     var = await product_service.get_variant(db, str(variant_id))
     if not var:
         raise HTTPException(status_code=404, detail="Variant not found")
-    updated = await product_service.adjust_stock(db, var, delta, reason)
+    updated = await product_service.adjust_stock(db, var, delta, reason, idempotency_key)
     await commit_async(db)
     return updated
 
