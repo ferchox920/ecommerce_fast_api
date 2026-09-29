@@ -1,0 +1,96 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, "portfolio/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install -r requirements.txt
+      - run: python -m ruff check tests/test_configuration.py tests/test_health.py tests/integration/service_checks.py
+      - name: Run unit and API tests
+        env:
+          APP_ENV: test
+          SECRET_KEY: ci-only-test-secret-key-do-not-use
+          DATABASE_URL: sqlite:///./test.db
+          ASYNC_DATABASE_URL: sqlite+aiosqlite:///./test.db
+        run: python -m pytest -q --junitxml=unit.xml
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: unit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  postgres-redis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: ecommerce
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U app -d ecommerce"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      APP_ENV: test
+      SECRET_KEY: ci-only-test-secret-key-do-not-use
+      REFRESH_SECRET_KEY: ci-only-refresh-secret-key-do-not-use
+      DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/ecommerce
+      ASYNC_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/ecommerce
+      TEST_REDIS_URL: redis://localhost:6379/0
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install -r requirements.txt
+      - name: Apply all migrations to an empty database
+        run: python -m alembic upgrade head
+      - name: Verify current migration head
+        run: python -m alembic current
+      - name: Verify app, PostgreSQL, Redis, liveness and readiness
+        run: python -m pytest -q tests/integration/service_checks.py --junitxml=integration.xml
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-report
+          path: integration.xml
+          if-no-files-found: ignore
+          retention-days: 7
