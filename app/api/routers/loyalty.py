@@ -19,6 +19,8 @@ async def get_profile(
     current_user: User = Security(get_current_user, scopes=["users:me"]),
 ):
     target_user = user_id or str(current_user.id)
+    if str(target_user) != str(current_user.id) and not current_user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not allowed to access another user's profile")
     profile = await loyalty_service.get_profile(db, target_user)
     return LoyaltyProfileRead.model_validate(profile)
 
@@ -40,6 +42,8 @@ async def redeem_reward(
     current_user: User = Security(get_current_user, scopes=["users:me"]),
 ):
     target_user = payload.user_id or str(current_user.id)
+    if str(target_user) != str(current_user.id) and not current_user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not allowed to redeem for another user")
     redeem_payload = LoyaltyRedeemPayload(
         user_id=target_user,
         points=payload.points,

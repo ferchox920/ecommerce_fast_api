@@ -5,6 +5,7 @@ from sqlalchemy import String, Enum, ForeignKey, Numeric, Integer, DateTime, fun
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.session import Base
+from app.db.types import GUID
 
 
 class OrderStatus(str, enum.Enum):
@@ -36,13 +37,23 @@ class ShippingStatus(str, enum.Enum):
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_orders_user_idempotency_key"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    # ✅ String para compat con SQLite; FK al texto de users.id
-    user_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    source_cart_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("carts.id", ondelete="SET NULL"), unique=True, nullable=True
+    )
+    applied_promotion_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="SET NULL"), nullable=True
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     currency: Mapped[str] = mapped_column(String(3), default="ARS", nullable=False)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.draft, nullable=False)
@@ -152,6 +163,8 @@ class PaymentWebhookEvent(Base):
     )
     provider: Mapped[PaymentProvider] = mapped_column(Enum(PaymentProvider), nullable=False)
     event_id: Mapped[str] = mapped_column(String(140), nullable=False)
+    event_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(40), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
     signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -162,6 +175,9 @@ class PaymentWebhookEvent(Base):
 
 class PaymentRefund(Base):
     __tablename__ = "payment_refunds"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "idempotency_key", name="uq_payment_refund_idempotency"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     payment_id: Mapped[uuid.UUID] = mapped_column(
@@ -170,6 +186,7 @@ class PaymentRefund(Base):
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
     provider_refund_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status_detail: Mapped[str | None] = mapped_column(String(120), nullable=True)
     raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

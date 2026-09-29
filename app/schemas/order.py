@@ -75,9 +75,9 @@ class PaymentWebhookEventRead(BaseModel):
     id: UUID
     event_id: str
     request_id: Optional[str]
-    signature: Optional[str]
+    event_type: Optional[str]
+    outcome: Optional[str]
     processed_at: datetime
-    payload: Optional[dict]
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -114,7 +114,8 @@ class ShipmentCreate(BaseModel):
 
 class OrderRead(BaseModel):
     id: UUID
-    user_id: str | None
+    user_id: UUID | None
+    applied_promotion_id: UUID | None
     status: OrderStatus
     payment_status: PaymentStatus
     shipping_status: ShippingStatus

@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from sqlalchemy import select
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.notification_manager import manager as ws_manager
 from app.db.operations import flush_async, refresh_async
@@ -17,6 +19,22 @@ from app.models.user import User
 from app.schemas.notification import NotificationCreate, NotificationUpdate
 from app.services import email_service
 from app.services.exceptions import DomainValidationError, ResourceNotFoundError
+
+
+@event.listens_for(Session, "after_commit")
+def _deliver_committed_notifications(session: Session) -> None:
+    for user_id, payload in session.info.pop("pending_notifications", []):
+        asyncio.get_running_loop().create_task(ws_manager.send_to_user(user_id, payload))
+    for to_email, subject, message in session.info.pop("pending_notification_emails", []):
+        email_service.send_notification_email(
+            to_email=to_email, subject=subject, message=message
+        )
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_rolled_back_notifications(session: Session) -> None:
+    session.info.pop("pending_notifications", None)
+    session.info.pop("pending_notification_emails", None)
 
 
 def _utcnow() -> datetime:
@@ -76,15 +94,15 @@ async def create_notification(
     }
 
     # user_id para websockets es string
-    asyncio.create_task(ws_manager.send_to_user(str(notification.user_id), payload))
+    db.sync_session.info.setdefault("pending_notifications", []).append(
+        (str(notification.user_id), payload)
+    )
 
     if send_email:
         user = await _get_user(db, notification.user_id)
         if user and user.email:
-            email_service.send_notification_email(
-                to_email=user.email,
-                subject=notification.title,
-                message=notification.message,
+            db.sync_session.info.setdefault("pending_notification_emails", []).append(
+                (user.email, notification.title, notification.message)
             )
 
     return notification

@@ -23,9 +23,8 @@ async def notifications_ws(
     db: AsyncSession = Depends(get_async_db),
 ) -> None:
     logger.info(
-        "WS HS incoming: path=%s query=%s client=%s",
+        "WS HS incoming: path=%s client=%s",
         websocket.url.path,
-        websocket.url.query,
         websocket.client,
     )
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import uuid
+import hashlib
+import json
+from decimal import Decimal
 from datetime import datetime, timezone
 from typing import List
 
@@ -17,9 +20,11 @@ from app.models.order import (
     ShippingStatus,
     Shipment,
 )
-from app.models.product import ProductVariant
+from app.models.product import Product, ProductVariant
+from app.models.promotion import PromotionStatus
+from app.models.user import User
 from app.schemas.order import OrderCreate, OrderLineCreate, ShipmentCreate
-from app.services import inventory_service, notification_service
+from app.services import inventory_service, notification_service, promotion_service
 from app.services.exceptions import (
     ConflictError,
     DomainValidationError,
@@ -126,6 +131,7 @@ async def get_order(db: AsyncSession, order_id: str) -> Order:
     )
     if not order:
         raise ResourceNotFoundError("Order not found")
+    await db.refresh(order, attribute_names=["lines", "payments", "shipments"])
     return order
 
 
@@ -139,11 +145,16 @@ async def _add_line(
     variant = await db.get(ProductVariant, _as_uuid(payload.variant_id, "variant_id"))
     if not variant:
         raise ResourceNotFoundError("Variant not found")
+    product = await db.get(Product, variant.product_id)
+    if not variant.active or product is None or not product.active:
+        raise ConflictError("Variant is not available")
+    if product.currency != order.currency:
+        raise DomainValidationError("Variant currency does not match order currency")
 
     if reserve_stock:
         await _reserve_stock(db, variant, payload.quantity, reason=f"order:{order.id}")
 
-    unit_price = payload.unit_price or await get_variant_effective_price(db, variant)
+    unit_price = await get_variant_effective_price(db, variant)
 
     line = OrderLine(
         order=order,
@@ -157,9 +168,39 @@ async def _add_line(
     return line
 
 
-async def create_order(db: AsyncSession, current_user_id: str | None, payload: OrderCreate) -> Order:
+async def create_order(
+    db: AsyncSession,
+    current_user_id: str | None,
+    payload: OrderCreate,
+    *,
+    idempotency_key: str | None = None,
+) -> tuple[Order, bool]:
+    if payload.currency != "ARS":
+        raise DomainValidationError("Unsupported order currency")
+    if any((payload.shipping_amount, payload.tax_amount, payload.discount_amount)):
+        raise DomainValidationError("Order monetary adjustments must be calculated by the server")
+    fingerprint = hashlib.sha256(
+        json.dumps(payload.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    if idempotency_key:
+        if current_user_id is None:
+            raise DomainValidationError("Authenticated user required for idempotent orders")
+        await db.get(User, current_user_id, with_for_update=True)
+        previous = await db.scalar(
+            select(Order).where(
+                Order.user_id == current_user_id,
+                Order.idempotency_key == idempotency_key,
+            )
+        )
+        if previous is not None:
+            if previous.request_fingerprint != fingerprint:
+                raise ConflictError("Idempotency key was used for a different order")
+            await _load_order_eager(db, previous)
+            return previous, False
     order = Order(
         user_id=str(current_user_id) if current_user_id is not None else None,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint if idempotency_key else None,
         currency=payload.currency or "ARS",
         status=OrderStatus.draft,
         payment_status=PaymentStatus.pending,
@@ -192,10 +233,13 @@ async def create_order(db: AsyncSession, current_user_id: str | None, payload: O
         message="Tu orden ha sido creada y está pendiente de pago.",
     )
     await _load_order_eager(db, order)
-    return order
+    return order, True
 
 
 async def add_line(db: AsyncSession, order: Order, payload: OrderLineCreate) -> Order:
+    order = await db.get(Order, order.id, with_for_update=True, populate_existing=True)
+    if order.status not in (OrderStatus.draft, OrderStatus.pending_payment):
+        raise ConflictError("Order lines cannot be changed in this state")
     await _add_line(db, order, payload, reserve_stock=True)
     await db.refresh(order, attribute_names=["lines"])
     _recompute_totals(order)
@@ -205,17 +249,34 @@ async def add_line(db: AsyncSession, order: Order, payload: OrderLineCreate) -> 
     return order
 
 
-async def create_order_from_cart(db: AsyncSession, cart: Cart) -> Order:
+async def create_order_from_cart(
+    db: AsyncSession, cart: Cart, *, promotion_id: uuid.UUID | None = None
+) -> Order:
+    cart = await db.get(Cart, cart.id, with_for_update=True, populate_existing=True)
+    if cart.status == CartStatus.converted:
+        existing = await db.scalar(select(Order).where(Order.source_cart_id == cart.id))
+        if existing is not None:
+            if existing.applied_promotion_id != promotion_id:
+                raise ConflictError("Checkout parameters changed on retry")
+            await _load_order_eager(db, existing)
+            return existing
+        raise ConflictError("Cart was already converted")
+    if cart.status != CartStatus.active:
+        raise ConflictError("Cart is not active")
     await db.refresh(cart, attribute_names=["items"])
+    if not cart.items:
+        raise DomainValidationError("Cart has no items")
 
     order = Order(
         user_id=str(cart.user_id) if cart.user_id is not None else None,
+        source_cart_id=cart.id,
+        applied_promotion_id=promotion_id,
         currency=cart.currency,
         status=OrderStatus.draft,
         payment_status=PaymentStatus.pending,
         shipping_status=ShippingStatus.pending,
         subtotal_amount=0,
-        discount_amount=float(getattr(cart, "discount_amount", 0) or 0),
+        discount_amount=0,
         shipping_amount=float(getattr(cart, "shipping_amount", 0) or 0),
         total_amount=0,
     )
@@ -231,6 +292,29 @@ async def create_order_from_cart(db: AsyncSession, cart: Cart) -> Order:
         await _add_line(db, order, line_payload, reserve_stock=True)
 
     await db.refresh(order, attribute_names=["lines"])
+    if promotion_id:
+        promotion = await promotion_service.get_promotion(db, promotion_id)
+        if promotion.status != PromotionStatus.active or promotion.scope not in ("product", "category"):
+            raise ConflictError("Promotion cannot be applied to this cart")
+        percent = Decimal(str((promotion.benefits_json or {}).get("discount_percent", 0)))
+        if percent <= 0 or percent > 100:
+            raise ConflictError("Promotion discount is invalid")
+        eligible_subtotal = Decimal("0")
+        for line in order.lines:
+            variant = await db.get(ProductVariant, line.variant_id)
+            product = await db.get(Product, variant.product_id)
+            eligible, _ = promotion_service.evaluate_eligibility(
+                promotion,
+                user_id=str(cart.user_id) if cart.user_id else None,
+                product_id=product.id,
+                category_id=product.category_id,
+                order_total=float(sum(Decimal(str(item.line_total)) for item in order.lines)),
+            )
+            if eligible:
+                eligible_subtotal += Decimal(str(line.line_total))
+        if eligible_subtotal <= 0:
+            raise ConflictError("Promotion does not apply to cart items")
+        order.discount_amount = float((eligible_subtotal * percent / 100).quantize(Decimal("0.01")))
     order.status = OrderStatus.pending_payment if order.lines else OrderStatus.draft
     _recompute_totals(order)
 
@@ -253,6 +337,7 @@ async def create_order_from_cart(db: AsyncSession, cart: Cart) -> Order:
 
 
 async def set_status_paid(db: AsyncSession, order: Order) -> Order:
+    order = await db.get(Order, order.id, with_for_update=True, populate_existing=True)
     if order.status not in [OrderStatus.pending_payment, OrderStatus.draft]:
         raise ConflictError("Order cannot be marked as paid")
     if order.total_amount <= 0:
@@ -283,6 +368,7 @@ async def set_status_paid(db: AsyncSession, order: Order) -> Order:
 
 
 async def cancel_order(db: AsyncSession, order: Order) -> Order:
+    order = await db.get(Order, order.id, with_for_update=True, populate_existing=True)
     if order.status in [OrderStatus.fulfilled, OrderStatus.refunded, OrderStatus.cancelled]:
         raise ConflictError("Order cannot be cancelled")
     if order.status == OrderStatus.paid:
@@ -313,6 +399,7 @@ async def cancel_order(db: AsyncSession, order: Order) -> Order:
 
 
 async def fulfill_order(db: AsyncSession, order: Order, payload: ShipmentCreate | None = None) -> Order:
+    order = await db.get(Order, order.id, with_for_update=True, populate_existing=True)
     if order.status != OrderStatus.paid:
         raise ConflictError("Only paid orders can be fulfilled")
 
