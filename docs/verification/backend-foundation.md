@@ -3,7 +3,7 @@
 ## Revision
 
 - Initial `origin/main`: `19cebcff8eae1f94c82d705a39c41dc20d2a81de`
-- Final implementation SHA: `6eb798baeccab7d5b71843e5168441b55403e5b0` (the evidence and README are committed separately afterward).
+- Final implementation SHA at PR creation: `6301dc075b4379b67109745519e77c186c252856` (the later evidence update changes documentation only).
 - Work branch: `portfolio/backend-foundation`
 
 ## Commands run and observed results
@@ -19,6 +19,7 @@
 - `python -m alembic upgrade head`: applied the migration history from an empty PostgreSQL database through `c4d5e6f7a8b9`.
 - `python -m alembic current`: returned `c4d5e6f7a8b9 (head)`.
 - With `DATABASE_URL`, `ASYNC_DATABASE_URL`, and `TEST_REDIS_URL` set to those local containers, `pytest -q tests/integration/service_checks.py`: **3 passed**. This checked the migration revision, PostgreSQL and Redis connectivity, app import, liveness, and readiness.
+- GitHub Actions on PR commit `6301dc075b4379b67109745519e77c186c252856`: the PostgreSQL/Redis job passed, including install, migrations, and all three integration checks; CodeQL passed; the unit job failed on the same 11 order/payment cases. [Backend CI run](https://github.com/ferchox920/ecommerce_fast_api/actions/runs/36508629271) · [CodeQL run](https://github.com/ferchox920/ecommerce_fast_api/actions/runs/36508629274).
 - Existing seed tests in the main suite passed, including repeat-run count checks. Seeds remain separate scripts and were not run against the PostgreSQL integration database.
 
 ## Test model and external services
@@ -32,7 +33,7 @@ The test suite emitted SQLAlchemy deprecation warnings during the initial baseli
 - Resolve the order/payment authorization behavior and align existing tests with intended rules. Several current tests expect customer order creation but receive `403 Not enough permissions`; other blocked-flow assertions fail downstream.
 - Continue the requested functional hardening: stock and reservation concurrency, order creation, payment processing, webhook signatures and event idempotency, refunds, and promotion rules.
 - Review the existing SQLAlchemy `Session.flush(objects)` deprecation warnings.
-- Run CI on GitHub after publishing this branch; no hosted CI result is claimed by this local evidence.
+- The unit job remains red for the documented functional failures. PostgreSQL/Redis integration and CodeQL are green on the PR run above.
 
 ## Structural decisions to retain
 
