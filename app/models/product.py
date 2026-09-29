@@ -2,13 +2,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import String, Boolean, Numeric, ForeignKey, DateTime, func, Integer, Text, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
-from typing import TYPE_CHECKING
 
 from app.db.session import Base
-
-if TYPE_CHECKING:  # pragma: no cover
-    from app.models.inventory import InventoryMovement
-
 
 # --- Clasificación ---
 class Category(Base):
