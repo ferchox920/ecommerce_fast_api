@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -36,16 +38,17 @@ def _headers() -> dict:
 
 
 async def create_checkout_preference(order: Order, *, idempotency_key: str | None = None) -> dict:
-    items = [
-        {
-            "id": str(line.variant_id),
-            "title": f"SKU {line.variant_id}",
-            "quantity": int(line.quantity),
-            "currency_id": order.currency,
-            "unit_price": float(line.unit_price),
-        }
-        for line in order.lines
-    ]
+    try:
+        total = Decimal(str(order.total_amount))
+        if not total.is_finite() or total <= 0 or total > Decimal("9999999999.99") or total != total.quantize(Decimal("0.01")):
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise PaymentProviderPermanentError("Order total is not payable in whole cents") from exc
+
+    # A single quantity-one item represents the server-authorized payable order.
+    # Never reconstruct its price from undiscounted lines or browser input.
+    items = [{"id": str(order.id), "title": f"Pedido {order.id}", "quantity": 1,
+              "currency_id": order.currency, "unit_price": total}]
 
     payload = {
         "external_reference": str(order.id),
@@ -59,6 +62,16 @@ async def create_checkout_preference(order: Order, *, idempotency_key: str | Non
         "metadata": {
             "order_id": str(order.id),
             "project": settings.PROJECT_NAME,
+            "order_lines": [{
+                "variant_id": str(line.variant_id),
+                "sku": getattr(line, "sku_snapshot", None),
+                "title": getattr(line, "title_snapshot", None),
+                "quantity": int(line.quantity),
+                "unit_price": str(line.unit_price),
+            } for line in order.lines],
+            "pricing": {name: str(getattr(order, name, 0)) for name in (
+                "subtotal_amount", "discount_amount", "shipping_amount", "tax_amount", "total_amount"
+            )},
         },
     }
 
@@ -71,7 +84,7 @@ async def create_checkout_preference(order: Order, *, idempotency_key: str | Non
             headers["X-Idempotency-Key"] = idempotency_key
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
-                f"{settings.MERCADO_PAGO_API_BASE_URL}/checkout/preferences", json=payload, headers=headers
+                f"{settings.MERCADO_PAGO_API_BASE_URL}/checkout/preferences", content=_encode_json(payload).encode("utf-8"), headers=headers
             )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -80,6 +93,19 @@ async def create_checkout_preference(order: Order, *, idempotency_key: str | Non
         raise PaymentProviderTransientError("Mercado Pago connection failed") from exc
 
     return response.json()
+
+
+def _encode_json(value) -> str:
+    """Encode Decimal as an exact JSON number, without a float intermediary."""
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("JSON numbers must be finite")
+        return format(value, "f")
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(key) + ":" + _encode_json(item) for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_encode_json(item) for item in value) + "]"
+    return json.dumps(value, allow_nan=False)
 
 
 async def refund_payment(

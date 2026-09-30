@@ -86,6 +86,26 @@ def _build_webhook_signature(secret: str, payment_id: str, request_id: str, ts: 
     return f"ts={ts},v1={digest}"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,wrong", [("transaction_amount", 1999.99), ("currency_id", "USD")])
+async def test_wrong_provider_money_has_no_commercial_effect(client, admin_token, user_token, monkeypatch, field, wrong):
+    order, product, variant = await _create_order(client, admin_token, user_token)
+    await _create_payment(client, order["id"], user_token, monkeypatch, preference_id="money-check")
+    state = {"id": "money-check", "status": "approved", "external_reference": order["id"], "transaction_amount": order["total_amount"], "currency_id": order["currency"]}
+    state[field] = wrong
+    monkeypatch.setattr("app.services.payment_providers.mercado_pago.settings.MERCADO_PAGO_WEBHOOK_SECRET", "whsec-test")
+    monkeypatch.setattr("app.services.payment_providers.mercado_pago.get_payment", _async_double(lambda _: state))
+    before = (await client.get(f"/api/v1/products/{product['id']}/variants")).json()
+    response = await client.post("/api/v1/payments/mercado-pago/webhook?data.id=money-check", json={"type": "payment", "data": {"id": "money-check"}}, headers={"x-request-id": "wrong-money", "x-signature": _build_webhook_signature("whsec-test", "money-check", "wrong-money")})
+    assert response.status_code == 409
+    after = (await client.get(f"/api/v1/orders/{order['id']}", headers={"Authorization": f"Bearer {user_token}"})).json()
+    assert after["paid_at"] is None
+    assert after["payment_status"] == "pending"
+    assert after["payments"][0]["status"] == "pending"
+    assert (await client.get(f"/api/v1/products/{product['id']}/variants")).json() == before
+    assert any(item["id"] == variant["id"] for item in before)
+
+
 async def _create_payment(
     client: AsyncClient,
     order_id: str,

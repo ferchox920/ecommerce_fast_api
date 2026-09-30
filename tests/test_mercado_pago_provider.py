@@ -2,6 +2,7 @@
 
 import inspect
 import json
+from decimal import Decimal
 from types import SimpleNamespace
 
 import httpx
@@ -15,6 +16,43 @@ from app.services.payment_providers import (
 )
 
 ORIGINAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subtotal,discount,shipping,tax,total,quantity,price", [
+    ("25.00", "0", "0", "0", "25.00", 2, "12.50"),
+    ("25.00", "2.50", "0", "0", "22.50", 2, "12.50"),
+    ("25.00", "0", "1.21", "0.79", "27.00", 2, "12.50"),
+    ("25.00", "2.50", "1.21", "0.79", "24.50", 2, "12.50"),
+    ("0.87", "0.07", "0.11", "0.02", "0.93", 3, "0.29"),
+])
+async def test_preference_amount_matches_authorized_total(monkeypatch, subtotal, discount, shipping, tax, total, quantity, price):
+    monkeypatch.setattr(mercado_pago.settings, "MERCADO_PAGO_ACCESS_TOKEN", "local-test-token")
+    seen = []
+    def respond(request):
+        seen.append(json.loads(request.content, parse_float=Decimal))
+        return httpx.Response(201, json={"id": "pref-amount"})
+    _transport_client(monkeypatch, respond)
+    line = SimpleNamespace(variant_id="variant-1", quantity=quantity, unit_price=Decimal(price), sku_snapshot="SKU-OLD", title_snapshot="Original title")
+    order = SimpleNamespace(id="order-amount", currency="ARS", lines=[line], subtotal_amount=Decimal(subtotal), discount_amount=Decimal(discount), shipping_amount=Decimal(shipping), tax_amount=Decimal(tax), total_amount=Decimal(total))
+    await mercado_pago.create_checkout_preference(order, idempotency_key="amount-key")
+    payload = seen[0]
+    assert sum(Decimal(str(item["unit_price"])) * item["quantity"] for item in payload["items"]) == Decimal(total)
+    assert all(item["currency_id"] == order.currency for item in payload["items"])
+    assert payload["metadata"]["order_lines"][0]["sku"] == "SKU-OLD"
+    assert payload["metadata"]["order_lines"][0]["title"] == "Original title"
+    assert payload["metadata"]["order_lines"][0]["quantity"] == quantity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("total", ["0", "-0.01", "NaN", "Infinity", "0.001"])
+async def test_non_payable_total_rejected_before_http(monkeypatch, total):
+    def unexpected(request):
+        pytest.fail("Non-payable total must never reach provider HTTP")
+    _transport_client(monkeypatch, unexpected)
+    order = SimpleNamespace(id="bad-order", currency="ARS", total_amount=Decimal(total), lines=[])
+    with pytest.raises(PaymentProviderPermanentError, match="payable"):
+        await mercado_pago.create_checkout_preference(order)
 
 
 def _transport_client(monkeypatch, handler):
@@ -40,7 +78,7 @@ async def test_preference_awaits_http_and_preserves_checkout_contract(monkeypatc
 
     timeouts = _transport_client(monkeypatch, respond)
     line = SimpleNamespace(variant_id="variant-1", quantity=2, unit_price=12.5)
-    order = SimpleNamespace(id="order-1", currency="ARS", lines=[line])
+    order = SimpleNamespace(id="order-1", currency="ARS", total_amount=Decimal("25.00"), lines=[line])
     assert inspect.iscoroutinefunction(mercado_pago.create_checkout_preference)
     result = await mercado_pago.create_checkout_preference(order, idempotency_key="preference-key")
     assert result["id"] == "pref-1"
@@ -51,7 +89,7 @@ async def test_preference_awaits_http_and_preserves_checkout_contract(monkeypatc
     assert seen[0].headers["Authorization"] == "Bearer local-test-token"
     payload = json.loads(seen[0].content)
     assert payload["external_reference"] == "order-1"
-    assert payload["items"] == [{"id": "variant-1", "title": "SKU variant-1", "quantity": 2, "currency_id": "ARS", "unit_price": 12.5}]
+    assert payload["items"] == [{"id": "order-1", "title": "Pedido order-1", "quantity": 1, "currency_id": "ARS", "unit_price": 25.0}]
     assert timeouts == [15.0]
 
 
