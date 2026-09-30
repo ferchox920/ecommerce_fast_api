@@ -34,7 +34,7 @@ jobs:
           ASYNC_DATABASE_URL: sqlite+aiosqlite:///./test.db
         run: python -m pytest -q --junitxml=unit.xml
       - if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: unit-test-report
           path: unit.xml
@@ -88,7 +88,7 @@ jobs:
       - name: Verify app, PostgreSQL, Redis, liveness and readiness
         run: python -m pytest -q tests/integration/service_checks.py --junitxml=integration.xml
       - if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: integration-test-report
           path: integration.xml
@@ -190,7 +190,7 @@ jobs:
           pg_isready -h localhost -p 5432 >> commerce-diagnostics.txt 2>&1 || true
           redis-cli -h localhost ping >> commerce-diagnostics.txt 2>&1 || true
       - if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: commerce-integration-report
           path: |
