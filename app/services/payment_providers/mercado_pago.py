@@ -15,9 +15,6 @@ from app.services.payment_providers import (
 )
 
 
-API_BASE_URL = "https://api.mercadopago.com"
-
-
 def _raise_provider_status(exc: httpx.HTTPStatusError) -> None:
     if exc.response.status_code == 429 or exc.response.status_code >= 500:
         raise PaymentProviderTransientError("Mercado Pago temporarily unavailable") from exc
@@ -74,7 +71,7 @@ async def create_checkout_preference(order: Order, *, idempotency_key: str | Non
             headers["X-Idempotency-Key"] = idempotency_key
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
-                f"{API_BASE_URL}/checkout/preferences", json=payload, headers=headers
+                f"{settings.MERCADO_PAGO_API_BASE_URL}/checkout/preferences", json=payload, headers=headers
             )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -92,7 +89,7 @@ async def refund_payment(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
-                f"{API_BASE_URL}/v1/payments/{payment_id}/refunds",
+                f"{settings.MERCADO_PAGO_API_BASE_URL}/v1/payments/{payment_id}/refunds",
                 json=payload,
                 headers={**_headers(), "X-Idempotency-Key": idempotency_key},
             )
@@ -109,7 +106,7 @@ async def get_payment(payment_id: str) -> dict:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
-                f"{API_BASE_URL}/v1/payments/{payment_id}", headers=_headers()
+                f"{settings.MERCADO_PAGO_API_BASE_URL}/v1/payments/{payment_id}", headers=_headers()
             )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:

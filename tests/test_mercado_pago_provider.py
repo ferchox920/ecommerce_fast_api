@@ -31,6 +31,7 @@ def _transport_client(monkeypatch, handler):
 @pytest.mark.asyncio
 async def test_preference_awaits_http_and_preserves_checkout_contract(monkeypatch):
     monkeypatch.setattr(mercado_pago.settings, "MERCADO_PAGO_ACCESS_TOKEN", "local-test-token")
+    monkeypatch.setattr(mercado_pago.settings, "MERCADO_PAGO_API_BASE_URL", "http://127.0.0.1:59001")
     seen = []
 
     def respond(request):
@@ -44,6 +45,7 @@ async def test_preference_awaits_http_and_preserves_checkout_contract(monkeypatc
     result = await mercado_pago.create_checkout_preference(order, idempotency_key="preference-key")
     assert result["id"] == "pref-1"
     assert seen[0].method == "POST"
+    assert seen[0].url.host == "127.0.0.1"
     assert seen[0].url.path == "/checkout/preferences"
     assert seen[0].headers["X-Idempotency-Key"] == "preference-key"
     assert seen[0].headers["Authorization"] == "Bearer local-test-token"

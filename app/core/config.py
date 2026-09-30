@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import warnings
+from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator, EmailStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -77,6 +78,7 @@ class Settings(BaseSettings):
 
     # --- Payments / Mercado Pago ---
     MERCADO_PAGO_ACCESS_TOKEN: str = ""
+    MERCADO_PAGO_API_BASE_URL: str = "https://api.mercadopago.com"
     MERCADO_PAGO_NOTIFICATION_URL: str = ""
     MERCADO_PAGO_SUCCESS_URL: str = ""
     MERCADO_PAGO_FAILURE_URL: str = ""
@@ -185,6 +187,25 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("MAX_REQUEST_SIZE_BYTES must be positive.")
         return value
+
+    @model_validator(mode="after")
+    def validate_payment_test_boundary(self) -> "Settings":
+        url = self.MERCADO_PAGO_API_BASE_URL.rstrip("/")
+        if url != "https://api.mercadopago.com":
+            parsed = urlsplit(url)
+            if (
+                self.APP_ENV.lower() not in {"test", "testing"}
+                or parsed.scheme != "http"
+                or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("MERCADO_PAGO_API_BASE_URL override requires test mode and a loopback HTTP origin.")
+        self.MERCADO_PAGO_API_BASE_URL = url
+        return self
 
     @model_validator(mode="after")
     def ensure_async_database_url(self) -> "Settings":
