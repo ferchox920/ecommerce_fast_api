@@ -65,7 +65,7 @@ async def create_checkout_preference(order: Order, *, idempotency_key: str | Non
             "order_lines": [{
                 "variant_id": str(line.variant_id),
                 "sku": getattr(line, "sku_snapshot", None),
-                "title": getattr(line, "title_snapshot", None),
+                "title": getattr(line, "product_title_snapshot", None),
                 "quantity": int(line.quantity),
                 "unit_price": str(line.unit_price),
             } for line in order.lines],

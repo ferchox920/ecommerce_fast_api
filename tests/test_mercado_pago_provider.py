@@ -2,11 +2,14 @@
 
 import inspect
 import json
+import uuid
 from decimal import Decimal
 from types import SimpleNamespace
 
 import httpx
 import pytest
+
+from app.models.order import OrderLine
 
 from app.services.payment_providers import (
     PaymentProviderConfigurationError,
@@ -33,15 +36,19 @@ async def test_preference_amount_matches_authorized_total(monkeypatch, subtotal,
         seen.append(json.loads(request.content, parse_float=Decimal))
         return httpx.Response(201, json={"id": "pref-amount"})
     _transport_client(monkeypatch, respond)
-    line = SimpleNamespace(variant_id="variant-1", quantity=quantity, unit_price=Decimal(price), sku_snapshot="SKU-OLD", title_snapshot="Original title")
+    line = OrderLine(variant_id=uuid.uuid4(), quantity=quantity, unit_price=Decimal(price),
+                     line_total=Decimal(subtotal), sku_snapshot="SKU-OLD",
+                     product_title_snapshot="Original title at purchase")
     order = SimpleNamespace(id="order-amount", currency="ARS", lines=[line], subtotal_amount=Decimal(subtotal), discount_amount=Decimal(discount), shipping_amount=Decimal(shipping), tax_amount=Decimal(tax), total_amount=Decimal(total))
     await mercado_pago.create_checkout_preference(order, idempotency_key="amount-key")
     payload = seen[0]
     assert sum(Decimal(str(item["unit_price"])) * item["quantity"] for item in payload["items"]) == Decimal(total)
     assert all(item["currency_id"] == order.currency for item in payload["items"])
-    assert payload["metadata"]["order_lines"][0]["sku"] == "SKU-OLD"
-    assert payload["metadata"]["order_lines"][0]["title"] == "Original title"
-    assert payload["metadata"]["order_lines"][0]["quantity"] == quantity
+    assert payload["metadata"]["order_lines"][0] == {
+        "variant_id": str(line.variant_id), "sku": "SKU-OLD",
+        "title": "Original title at purchase", "quantity": quantity,
+        "unit_price": price,
+    }
 
 
 @pytest.mark.asyncio
