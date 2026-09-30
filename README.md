@@ -2,6 +2,8 @@
 
 Backend HTTP API for a store catalog and its customer and administrative workflows. It provides catalog, inventory, cart, order, payment, purchasing, promotion, loyalty, notification, and reporting endpoints.
 
+The separate [e-fast frontend](https://github.com/ferchox920/e-fast) is the Next.js/RTK Query client. Its README documents the reproducible production journey with PostgreSQL, Redis and a local payment provider. The [evaluation guide and screenshots](https://github.com/ferchox920/e-fast/blob/main/docs/review/author-review.md) distinguish automated verification from the pending human visual review. The local provider does not validate real Mercado Pago checkout or perform real charges.
+
 ## Architecture
 
 - FastAPI and Pydantic for HTTP and validation.
