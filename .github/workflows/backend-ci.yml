@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -74,7 +74,7 @@ jobs:
       TEST_REDIS_URL: redis://localhost:6379/0
       REDIS_URL: redis://localhost:6379/0
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -117,7 +117,7 @@ jobs:
       DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/ecommerce
       ASYNC_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/ecommerce
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -164,7 +164,7 @@ jobs:
       TEST_REDIS_URL: redis://localhost:6379/0
       REDIS_URL: redis://localhost:6379/0
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
