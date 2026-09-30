@@ -83,11 +83,13 @@ async def get_current_user(
     user = await _get_user_by_id(db, token_data.sub)
     if user is None:
         raise cred_exc
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
 
     if security_scopes.scopes:
-        if "admin" not in token_scopes:
+        if "admin" not in token_scopes or not user.is_superuser:
             for scope in security_scopes.scopes:
-                if scope not in token_scopes:
+                if scope == "admin" or scope not in token_scopes:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Not enough permissions",
@@ -111,7 +113,10 @@ async def get_optional_user(
     if token_data.sub is None:
         return None
 
-    return await _get_user_by_id(db, token_data.sub)
+    user = await _get_user_by_id(db, token_data.sub)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+    return user
 
 
 def get_current_active_user(

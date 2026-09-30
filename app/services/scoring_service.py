@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Scoring layer for Rate View."""
+
+from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone

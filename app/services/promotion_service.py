@@ -181,6 +181,7 @@ async def get_promotion(db: AsyncSession, promotion_id: UUID) -> Promotion:
     promotion = await db.get(Promotion, promotion_id)
     if not promotion:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Promotion not found")
+    await db.refresh(promotion, attribute_names=["customers"])
     return promotion
 
 
@@ -306,7 +307,7 @@ def evaluate_eligibility(
             return False, ["product_scope_mismatch"]
 
     if promotion.type == PromotionType.customer:
-        targeted = {pc.customer_id for pc in promotion.customers}
+        targeted = {str(pc.customer_id) for pc in promotion.customers}
         if not targeted:
             targeted = {str(cid) for cid in criteria.get("customer_ids", []) if str(cid).strip()}
         if targeted and (not user_id or user_id not in targeted):

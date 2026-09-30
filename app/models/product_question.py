@@ -1,10 +1,11 @@
 import uuid
 import enum
-from sqlalchemy import Enum, ForeignKey, String, Text, Boolean, DateTime, func
+from sqlalchemy import Enum, ForeignKey, Text, Boolean, DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.db.types import GUID
 
 
 class QuestionStatus(str, enum.Enum):
@@ -21,7 +22,7 @@ class ProductQuestion(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
     )
-    user_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     content: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[QuestionStatus] = mapped_column(Enum(QuestionStatus), default=QuestionStatus.pending, nullable=False)
@@ -43,7 +44,7 @@ class ProductAnswer(Base):
     question_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("product_questions.id", ondelete="CASCADE"), nullable=False
     )
-    admin_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    admin_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     is_visible: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

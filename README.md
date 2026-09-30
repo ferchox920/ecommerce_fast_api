@@ -1,183 +1,112 @@
-## FastAPI E-Commerce Platform
+# E-commerce API
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
-![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x-orange)
-![Alembic](https://img.shields.io/badge/Migrations-Alembic-lightgrey)
-![Pytest](https://img.shields.io/badge/Tests-70%20passed-brightgreen)
+Backend HTTP API for a store catalog and its customer and administrative workflows. It provides catalog, inventory, cart, order, payment, purchasing, promotion, loyalty, notification, and reporting endpoints.
 
-Backend modular para un ecommerce construido con **FastAPI**, **SQLAlchemy 2.x** y **Alembic**. El proyecto cubre catalogo, inventario, carrito, ordenes, pagos, abastecimiento, promociones, fidelizacion, notificaciones, preguntas sobre productos, analiticas y reportes.
+## Architecture
 
-## Estado actual
+- FastAPI and Pydantic for HTTP and validation.
+- SQLAlchemy async sessions with PostgreSQL as the application database.
+- Alembic for structural migrations.
+- Redis is used for rate limits and token blacklist where configured; the commercial integration job runs it alongside PostgreSQL.
+- Celery tasks exist for background email/report work; this local setup does not start a worker.
+- The unit API suite uses SQLite. A separate CI job exercises the real API, PostgreSQL transactions, Redis readiness, and a deterministic Mercado Pago double.
 
-- Suite actual: `70` tests aprobados.
-- Catalogo, inventario, carrito, ordenes y compras: implementados y probados.
-- Pagos con Mercado Pago: preferencia, webhook firmado, idempotencia, dedupe, refund total/parcial y auditoria.
-- Exposure engine: operativo, con cache y metricas basicas de observabilidad.
+## Demonstrated commercial flow
 
-## Caracteristicas principales
-
-### Catalogo e inventario
-
-- CRUD de productos, variantes, imagenes, marcas y categorias.
-- Movimientos de stock: `receive`, `reserve`, `release`, `sale`, `adjust`.
-- Alertas de reposicion y sugerencias de reabastecimiento.
-- Evaluacion de calidad de producto.
-
-### Carrito y ordenes
-
-- Carrito para usuario autenticado y anonimo con `guest_token`.
-- Conversion de carrito a orden.
-- Ordenes con lineas, pagos, shipment y estados operativos.
-- Regla de negocio aplicada: el admin no realiza checkout de cliente.
-
-### Pagos
-
-- Integracion con Mercado Pago para crear preferencias de checkout.
-- Idempotencia por `Idempotency-Key` en creacion de pagos.
-- Webhook con validacion de firma y deduplicacion de eventos.
-- Refund administrativo total o parcial.
-- Auditoria de pagos con eventos webhook y refunds persistidos.
-
-### Promociones, loyalty y engagement
-
-- CRUD administrativo de promociones y elegibilidad publica.
-- Loyalty con perfiles, niveles, ajustes y redencion.
-- Ingesta de eventos `view`, `click`, `add_to_cart`, `purchase`.
-- Scoring y exposure mix con reglas de popularidad, stock y cold boost.
-
-### Notificaciones y preguntas
-
-- Bandeja de notificaciones.
-- WebSocket autenticado.
-- Preguntas sobre productos con respuesta y moderacion administrativa.
-
-### Reportes y analiticas
-
-- Overview administrativo.
-- Dashboard operativo.
-- Reportes de ventas, valor de inventario, costos de compra y rotacion.
-- Ejecucion directa o via Celery.
-
-## Arquitectura
-
-- **FastAPI** para la capa HTTP.
-- **Pydantic v2** para validacion y serializacion.
-- **SQLAlchemy 2.x** con sesiones async.
-- **Alembic** para migraciones.
-- **PostgreSQL** como base principal.
-- **SQLite** para tests locales.
-- **Redis** opcional para cache del exposure engine.
-- **Celery** para tareas y reportes.
-
-Estructura principal:
-
-- `app/api`: routers HTTP y WebSocket.
-- `app/models`: modelos ORM.
-- `app/schemas`: contratos de entrada/salida.
-- `app/services`: logica de negocio.
-- `app/tasks`: tareas Celery.
-- `migrations/versions`: historial de migraciones.
-- `tests`: cobertura automatizada.
-
-## Endpoints destacados
-
-| Dominio | Ruta / Metodo | Descripcion |
-|---|---|---|
-| Auth | `POST /api/v1/auth/login` | Login con JWT. |
-| Productos | `GET /api/v1/products` | Listado publico con filtros. |
-| Carrito | `POST /api/v1/cart/items` | Agrega item al carrito. |
-| Ordenes | `POST /api/v1/orders` | Crea orden para usuario cliente. |
-| Ordenes | `POST /api/v1/orders/from-cart` | Convierte carrito a orden. |
-| Pagos | `POST /api/v1/payments/orders/{order_id}` | Crea preferencia de pago. |
-| Pagos | `POST /api/v1/payments/mercado-pago/webhook` | Webhook del proveedor. |
-| Pagos | `POST /api/v1/payments/{payment_id}/refund` | Refund administrativo total o parcial. |
-| Pagos | `GET /api/v1/payments/{payment_id}/audit` | Auditoria del pago. |
-| Promociones | `GET /api/v1/promotions/active` | Lista promociones activas. |
-| Loyalty | `GET /api/v1/loyalty/profile` | Perfil de fidelizacion. |
-| Exposure | `GET /api/v1/exposure` | Mix de productos balanceado. |
-| Analytics | `GET /api/v1/admin/analytics/overview` | KPIs generales. |
-| Reportes | `GET /api/v1/reports/sales` | Reporte de ventas. |
-
-## Configuracion
-
-Archivo base:
-
-- `.env`
-- `.env.example`
-
-Variables relevantes:
-
-- `DATABASE_URL`
-- `ASYNC_DATABASE_URL`
-- `SECRET_KEY`
-- `REFRESH_SECRET_KEY`
-- `MERCADO_PAGO_ACCESS_TOKEN`
-- `MERCADO_PAGO_WEBHOOK_SECRET`
-- `REDIS_URL`
-- `CELERY_BROKER_URL`
-- `CELERY_RESULT_BACKEND`
-
-## Migraciones
-
-Ejecutar:
-
-```bash
-alembic upgrade head
+```mermaid
+flowchart LR
+    Catalog[Catalog and variants] --> Cart[Customer cart]
+    Cart --> Order[Order and stock reservation]
+    Order --> Preference[Mercado Pago preference]
+    Preference --> Webhook[Signed webhook]
+    Webhook --> Sale[Paid order and stock sale]
+    Sale --> Refund[Partial or full refund]
+    Order --> Notification[Committed notification]
+    Sale --> Notification
 ```
 
-Migraciones relevantes del dominio:
+The [commercial API test](tests/integration/commerce_flow.py) creates a product, receives inventory, authenticates users, builds a cart, applies a product promotion, creates an order, simulates a payment preference and a signed webhook, then checks the stock sale, notification, duplicate webhook, access denial, and idempotent partial refund. It uses the application and migrated PostgreSQL schema; only Mercado Pago calls are replaced by a controlled double.
 
-- `e1a2b3c4d5f6_orders_module`
-- `f1234567890ab_cart_module`
-- `0a1b2c3d4e5f_orders_payments_shipments`
-- `2f6e7a8b9cde_rate_view_system`
-- `b7c3d9e4f1a2_payment_hardening`
-- `c4d5e6f7a8b9_payment_refund_audit`
+PostgreSQL row locks serialize stock changes per variant and refunds per payment. Database constraints enforce nonnegative stock and `reserved <= on_hand`. Inventory movements record signed adjustments and optional idempotency keys. Direct sales cannot consume an order's reservation. A cart can be converted once; direct order creation accepts an `Idempotency-Key` header. Product prices and promotion discounts are calculated at checkout rather than accepted from request totals. Order lines retain unit price, line total, SKU, and product title as purchase-time snapshots.
 
-## Pruebas
+Webhook validation uses Mercado Pago's `x-signature`, `x-request-id`, and URL `data.id` contract, including millisecond timestamps. The handler retrieves the payment from Mercado Pago, checks its order reference, amount, and currency, then applies a legal transition. Duplicate and stale events do not repeat effects. Refund requests accept `Idempotency-Key`; the key is forwarded to Mercado Pago and stored with the refund record. Provider failures leave the database transaction uncommitted. Notification delivery is queued until commit. See [Mercado Pago's webhook contract](https://www.mercadopago.com.ar/developers/en/docs/wallet-connect/notifications) and [idempotency guidance](https://www.mercadopago.com.ar/developers/en/news/2023/01/04/Idempotency-key-usage-will-be-mandatory).
 
-Ejecutar:
+## Requirements
 
-```bash
+- Python 3.13 (the verified dependency lock targets this interpreter).
+- Docker Desktop or Docker Engine with Compose v2.
+
+## Install and start locally
+
+```powershell
+Copy-Item .env.example .env
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+docker compose -p ecommerce-local up -d --wait db redis
+```
+
+On macOS/Linux, activate `.venv` and use `docker compose -p ecommerce-local up -d --wait db redis`.
+The Compose project has its own named volume and network. Stop it with `docker compose -p ecommerce-local down`; add `-v` only when you want to discard its local database volume.
+
+`.env.example` contains development-only credentials for the local containers. Replace both signing keys before deploying. Production requires `APP_ENV=production`, a `SECRET_KEY` of at least 32 characters, and a different `REFRESH_SECRET_KEY` of at least 32 characters. Database configuration is required by the running API. Redis is optional; leaving `REDIS_URL` unset uses the application's in-process fallbacks.
+
+Optional provider settings are blank by default. Mercado Pago and Cloudinary operations require their respective credentials and can contact external services; no seed or CI command invokes them. Email delivery is disabled by default.
+
+## Migrations and demo data
+
+With the services running and `.env` configured:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+This applies the full schema to an empty PostgreSQL database. Seeds are opt-in and separate from migrations:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/seed_dev_users.py
+.\.venv\Scripts\python.exe scripts/seed_dev_products.py
+.\.venv\Scripts\python.exe scripts/seed_product_relationships.py
+```
+
+The seeds use fictitious `.test` accounts and sample catalog content. They are designed to be re-run and do not provision provider accounts or call payment, image-hosting, or email APIs. Treat the seeded user credentials as public development data.
+
+To verify idempotency on a fresh, migrated PostgreSQL database, run `python -m scripts.verify_seed_idempotency` twice. Each invocation executes the three documented seeds twice, checks row counts and references, and rejects external connections. Use a disposable database; this command inserts the sample data.
+
+## Run the API
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+```
+
+Open `/docs` for the interactive API documentation.
+
+## Health endpoints
+
+- `GET /health/live` confirms the process is running and does not probe dependencies.
+- `GET /health/ready` checks PostgreSQL and returns `503` if it cannot connect. Redis is optional and does not block readiness.
+
+## Tests and checks
+
+```powershell
 .\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check app tests migrations scripts
 ```
 
-Estado actual:
+The main suite uses SQLite test fixtures. PostgreSQL migrations and Redis checks run separately in GitHub Actions against disposable services. Locally, after starting Compose and applying migrations, configure `DATABASE_URL`, `ASYNC_DATABASE_URL`, `REDIS_URL`, and `TEST_REDIS_URL` for your local services, then run:
 
-- `70 passed`
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/integration/service_checks.py
+.\.venv\Scripts\python.exe -m pytest -q tests/integration/inventory_concurrency.py tests/integration/refund_concurrency.py tests/integration/commerce_flow.py
+```
 
-Cobertura funcional principal:
+For the Compose defaults, the URLs are `postgresql+psycopg://app:app@localhost:5433/ecommerce`, `postgresql+asyncpg://app:app@localhost:5433/ecommerce`, and `redis://localhost:6379/0`. Run `alembic upgrade head` against an empty PostgreSQL database before the tests. The [technical evaluation guide](docs/verification/backend-hardening.md) records the exact commands and observed local evidence.
 
-- auth y permisos,
-- productos, categorias, marcas, variantes e imagenes,
-- inventario y replenishment,
-- carrito,
-- ordenes,
-- pagos,
-- preguntas y notificaciones,
-- reportes,
-- rate-view.
+Dependencies are fully pinned in `requirements.txt`; install with `python -m pip install -r requirements.txt`. Dependabot checks pip and GitHub Actions weekly.
 
-## Observabilidad
+## Known limits
 
-Actualmente el backend expone:
-
-- metricas HTTP generales,
-- metricas de login,
-- metricas de exposure para requests, latencia, cache hit/miss e items servidos,
-- endpoint `/metrics` protegido por admin.
-
-## Limitaciones conocidas
-
-- La integracion de pagos sigue enfocada en Mercado Pago Checkout Pro.
-- No hay conciliacion contable avanzada ni captura parcial.
-- Exposure ya tiene metricas basicas, pero la parte de A/B y observabilidad mas fina sigue abierta.
-- El documento de avance en `docs/ecommerce_avance.md` es la referencia mas precisa del estado actual.
-
-## Referencias internas
-
-- Estado funcional actualizado: `docs/ecommerce_avance.md`
-- Notas de OAuth frontend: `docs/oauth_google_frontend.md`
-- Flujo de alta de producto: `docs/product_creation.md`
+- Only product and category promotions with `discount_percent` are applied at checkout. Other promotion types have eligibility endpoints but are not checkout discounts.
+- Full refunds restore item stock only for paid, unfulfilled orders. Partial refunds do not automatically restore items.
+- Guest cart tokens act as possession credentials. Keep them private; this API does not add an account recovery flow for guests.
+- The main suite uses ORM-created SQLite tables. Use the dedicated PostgreSQL job to verify migrations, concurrency, and the commercial API path.
+- External payment calls are simulated in tests. No production credentials, deployment, coverage percentage, or performance claim is included.

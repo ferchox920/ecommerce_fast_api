@@ -19,7 +19,7 @@ class AnswerCreate(BaseModel):
 class AnswerRead(BaseModel):
     id: UUID
     question_id: UUID
-    admin_id: Optional[str]
+    admin_id: Optional[UUID]
     content: str
     is_visible: bool
     created_at: datetime
@@ -31,7 +31,7 @@ class AnswerRead(BaseModel):
 class QuestionRead(BaseModel):
     id: UUID
     product_id: UUID
-    user_id: Optional[str]
+    user_id: Optional[UUID]
     content: str
     status: str
     is_visible: bool

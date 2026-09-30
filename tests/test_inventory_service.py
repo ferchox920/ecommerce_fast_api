@@ -132,18 +132,18 @@ async def test_reserve_and_release_validation(async_db_session: AsyncSession):
 async def test_commit_sale_from_reserved_and_onhand(async_db_session: AsyncSession):
     v = await _mk_variant(async_db_session, on_hand=10, reserved=3)
 
-    # vender 2 -> consume reserved y on_hand
+    # La venta directa no consume reservas de pedidos.
     await inventory_service.commit_sale(async_db_session, v, 2, reason="venta-1")
     await async_db_session.commit()
     await async_db_session.refresh(v)
-    assert v.stock_reserved == 1
+    assert v.stock_reserved == 3
     assert v.stock_on_hand == 8  # 10 - 2
 
-    # vender 2 -> consume el último reservado y uno de on_hand
+    # Otra venta directa consume sólo stock disponible.
     await inventory_service.commit_sale(async_db_session, v, 2, reason="venta-2")
     await async_db_session.commit()
     await async_db_session.refresh(v)
-    assert v.stock_reserved == 0
+    assert v.stock_reserved == 3
     assert v.stock_on_hand == 6  # 8 - 2
 
     # vender más que on_hand -> 400
@@ -164,7 +164,7 @@ async def test_alerts_and_replenishment_suggestion_without_supplier(async_db_ses
     assert hit.missing == 2
 
     sugg = await inventory_service.compute_replenishment_suggestion(async_db_session, supplier_id=None)
-    line = next((l for l in sugg.lines if l.variant_id == v.id), None)
+    line = next((item for item in sugg.lines if item.variant_id == v.id), None)
     assert line is not None
     # regla: max(missing, reorder_qty) con mínimo 1
     assert line.suggested_qty == 5
@@ -205,7 +205,7 @@ async def test_alerts_and_replenishment_filtered_by_supplier(async_db_session: A
 
     sugg = await inventory_service.compute_replenishment_suggestion(async_db_session, supplier_id=supplier_id)
     assert sugg.supplier_id == supplier_id
-    line_ids = {l.variant_id for l in sugg.lines}
+    line_ids = {item.variant_id for item in sugg.lines}
     assert v1.id in line_ids
     assert v2.id not in line_ids
 

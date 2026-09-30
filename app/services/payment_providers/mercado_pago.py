@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
 from app.core.config import settings
 from app.models.order import Order
 from app.services.payment_providers import (
-    PaymentProviderError,
     PaymentProviderConfigurationError,
+    PaymentProviderPermanentError,
+    PaymentProviderTransientError,
 )
 
 
-API_BASE_URL = "https://api.mercadopago.com"
+def _raise_provider_status(exc: httpx.HTTPStatusError) -> None:
+    if exc.response.status_code == 429 or exc.response.status_code >= 500:
+        raise PaymentProviderTransientError("Mercado Pago temporarily unavailable") from exc
+    raise PaymentProviderPermanentError("Mercado Pago rejected the request") from exc
 
 
 def _get_access_token() -> str:
@@ -31,17 +37,18 @@ def _headers() -> dict:
     }
 
 
-def create_checkout_preference(order: Order, *, idempotency_key: str | None = None) -> dict:
-    items = [
-        {
-            "id": str(line.variant_id),
-            "title": f"SKU {line.variant_id}",
-            "quantity": int(line.quantity),
-            "currency_id": order.currency,
-            "unit_price": float(line.unit_price),
-        }
-        for line in order.lines
-    ]
+async def create_checkout_preference(order: Order, *, idempotency_key: str | None = None) -> dict:
+    try:
+        total = Decimal(str(order.total_amount))
+        if not total.is_finite() or total <= 0 or total > Decimal("9999999999.99") or total != total.quantize(Decimal("0.01")):
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise PaymentProviderPermanentError("Order total is not payable in whole cents") from exc
+
+    # A single quantity-one item represents the server-authorized payable order.
+    # Never reconstruct its price from undiscounted lines or browser input.
+    items = [{"id": str(order.id), "title": f"Pedido {order.id}", "quantity": 1,
+              "currency_id": order.currency, "unit_price": total}]
 
     payload = {
         "external_reference": str(order.id),
@@ -55,6 +62,16 @@ def create_checkout_preference(order: Order, *, idempotency_key: str | None = No
         "metadata": {
             "order_id": str(order.id),
             "project": settings.PROJECT_NAME,
+            "order_lines": [{
+                "variant_id": str(line.variant_id),
+                "sku": getattr(line, "sku_snapshot", None),
+                "title": getattr(line, "product_title_snapshot", None),
+                "quantity": int(line.quantity),
+                "unit_price": str(line.unit_price),
+            } for line in order.lines],
+            "pricing": {name: str(getattr(order, name, 0)) for name in (
+                "subtotal_amount", "discount_amount", "shipping_amount", "tax_amount", "total_amount"
+            )},
         },
     }
 
@@ -65,57 +82,69 @@ def create_checkout_preference(order: Order, *, idempotency_key: str | None = No
         headers = _headers()
         if idempotency_key:
             headers["X-Idempotency-Key"] = idempotency_key
-        response = httpx.post(
-            f"{API_BASE_URL}/checkout/preferences",
-            json=payload,
-            headers=headers,
-            timeout=15.0,
-        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{settings.MERCADO_PAGO_API_BASE_URL}/checkout/preferences", content=_encode_json(payload).encode("utf-8"), headers=headers
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise PaymentProviderError(f"Mercado Pago error: {exc.response.text}") from exc
+        _raise_provider_status(exc)
     except httpx.HTTPError as exc:
-        raise PaymentProviderError(f"Mercado Pago connection error: {exc}") from exc
+        raise PaymentProviderTransientError("Mercado Pago connection failed") from exc
 
     return response.json()
 
 
-def refund_payment(payment_id: str, *, amount: float | None = None) -> dict:
+def _encode_json(value) -> str:
+    """Encode Decimal as an exact JSON number, without a float intermediary."""
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("JSON numbers must be finite")
+        return format(value, "f")
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(key) + ":" + _encode_json(item) for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_encode_json(item) for item in value) + "]"
+    return json.dumps(value, allow_nan=False)
+
+
+async def refund_payment(
+    payment_id: str, *, amount: float | None = None, idempotency_key: str
+) -> dict:
     payload = {"amount": amount} if amount is not None else None
     try:
-        response = httpx.post(
-            f"{API_BASE_URL}/v1/payments/{payment_id}/refunds",
-            json=payload,
-            headers=_headers(),
-            timeout=15.0,
-        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{settings.MERCADO_PAGO_API_BASE_URL}/v1/payments/{payment_id}/refunds",
+                json=payload,
+                headers={**_headers(), "X-Idempotency-Key": idempotency_key},
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise PaymentProviderError(f"Mercado Pago error: {exc.response.text}") from exc
+        _raise_provider_status(exc)
     except httpx.HTTPError as exc:
-        raise PaymentProviderError(f"Mercado Pago connection error: {exc}") from exc
+        raise PaymentProviderTransientError("Mercado Pago connection failed") from exc
 
     return response.json()
 
 
-def get_payment(payment_id: str) -> dict:
+async def get_payment(payment_id: str) -> dict:
     try:
-        response = httpx.get(
-            f"{API_BASE_URL}/v1/payments/{payment_id}",
-            headers=_headers(),
-            timeout=15.0,
-        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{settings.MERCADO_PAGO_API_BASE_URL}/v1/payments/{payment_id}", headers=_headers()
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise PaymentProviderError(f"Mercado Pago error: {exc.response.text}") from exc
+        _raise_provider_status(exc)
     except httpx.HTTPError as exc:
-        raise PaymentProviderError(f"Mercado Pago connection error: {exc}") from exc
+        raise PaymentProviderTransientError("Mercado Pago connection failed") from exc
 
     return response.json()
 
 
 def validate_webhook_signature(
-    payload: dict,
+    resource_id: str | None,
     *,
     signature_header: str | None,
     request_id: str | None,
@@ -123,8 +152,8 @@ def validate_webhook_signature(
 ) -> bool:
     secret = settings.MERCADO_PAGO_WEBHOOK_SECRET
     if not secret:
-        return True
-    if not signature_header or not request_id:
+        return False
+    if not signature_header or not request_id or not resource_id:
         return False
 
     signature_parts: dict[str, str] = {}
@@ -145,17 +174,10 @@ def validate_webhook_signature(
         return False
 
     max_age = tolerance_seconds or settings.MERCADO_PAGO_WEBHOOK_TOLERANCE_SECONDS
-    if max_age > 0 and abs(int(time.time()) - ts_int) > max_age:
+    timestamp_seconds = ts_int / 1000 if ts_int >= 10**12 else ts_int
+    if max_age > 0 and abs(time.time() - timestamp_seconds) > max_age:
         return False
-
-    data = payload.get("data") or {}
-    resource_id = data.get("id") or payload.get("resource")
-    if isinstance(resource_id, str) and "/" in resource_id:
-        resource_id = resource_id.rstrip("/").split("/")[-1]
-    if not resource_id:
-        return False
-
-    manifest = f"id:{resource_id};request-id:{request_id};ts:{ts};"
+    manifest = f"id:{resource_id.lower()};request-id:{request_id};ts:{ts};"
     expected = hmac.new(
         secret.encode("utf-8"),
         msg=manifest.encode("utf-8"),

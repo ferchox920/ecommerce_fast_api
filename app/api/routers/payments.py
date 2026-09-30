@@ -58,6 +58,7 @@ async def mercado_pago_webhook(
             payload,
             signature_header=request.headers.get("x-signature"),
             request_id=request.headers.get("x-request-id"),
+            resource_id=request.query_params.get("data.id"),
         )
         await commit_async(db)
     except Exception:
@@ -70,6 +71,7 @@ async def mercado_pago_webhook(
 async def refund_payment(
     payment_id: UUID,
     payload: PaymentRefundCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=120),
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Security(get_current_user, scopes=["admin"]),
 ):
@@ -80,6 +82,7 @@ async def refund_payment(
         amount=payload.amount,
         reason=payload.reason,
         restock_items=payload.restock_items,
+        idempotency_key=idempotency_key,
     )
     await commit_async(db)
     await db.refresh(refunded)

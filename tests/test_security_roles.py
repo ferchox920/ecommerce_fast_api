@@ -18,7 +18,8 @@ async def test_user_cannot_create_product(client: AsyncClient, user_token: str, 
     rb = await client.post("/api/v1/brands", json={"name": "BrandPrivada"},
                            headers={"Authorization": f"Bearer {admin_token}"})
     assert rc.status_code == 201 and rb.status_code == 201
-    cat = rc.json(); brand = rb.json()
+    cat = rc.json()
+    brand = rb.json()
 
     # Usuario normal intenta crear producto => prohibido
     r = await client.post(

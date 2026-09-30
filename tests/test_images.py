@@ -129,7 +129,6 @@ async def test_set_primary_image_endpoint(client: AsyncClient, admin_token: str)
                            json={"url": "https://example.com/zapa1.jpg"},
                            headers={"Authorization": f"Bearer {admin_token}"})
     assert r1.status_code == 201
-    img1 = r1.json()
 
     r2 = await client.post(f"/api/v1/products/{prod['id']}/images",
                            json={"url": "https://example.com/zapa2.jpg"},

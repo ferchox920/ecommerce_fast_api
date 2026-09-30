@@ -1,5 +1,5 @@
 from uuid import UUID
-from typing import Optional, List
+from typing import List
 from pydantic import BaseModel, Field, ConfigDict
 
 class StockAlert(BaseModel):

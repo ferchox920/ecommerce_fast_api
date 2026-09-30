@@ -2,6 +2,7 @@
 from httpx import AsyncClient
 import uuid
 from datetime import datetime, timezone
+from app.models.product import Product, ProductVariant
 
 
 async def _create_base(client: AsyncClient, admin_token: str):
@@ -52,8 +53,8 @@ async def _create_base(client: AsyncClient, admin_token: str):
 
 
 @pytest.mark.asyncio
-async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_token: str):
-    _, variant = await _create_base(client, admin_token)
+async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_token: str, db_session):
+    product, variant = await _create_base(client, admin_token)
 
     ro = await client.post(
         "/api/v1/orders",
@@ -72,6 +73,14 @@ async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_
     assert len(order["lines"]) == 1
     assert order["lines"][0]["quantity"] == 2
     assert order["total_amount"] == 3000.0
+    assert order["lines"][0]["sku_snapshot"] == variant["sku"]
+    assert order["lines"][0]["product_title_snapshot"] == product["title"]
+
+    stored_product = db_session.get(Product, uuid.UUID(product["id"]))
+    stored_variant = db_session.get(ProductVariant, uuid.UUID(variant["id"]))
+    stored_product.title = "Renamed product"
+    stored_variant.sku = f"RENAMED-{uuid.uuid4()}"
+    db_session.commit()
 
     rg = await client.get(
         f"/api/v1/orders/{order['id']}",
@@ -82,6 +91,41 @@ async def test_order_create_and_get(client: AsyncClient, admin_token: str, user_
     assert og["id"] == order["id"]
     assert og["payment_status"] == "pending"
     assert og["shipping_status"] == "pending"
+    assert og["lines"][0]["sku_snapshot"] == variant["sku"]
+    assert og["lines"][0]["product_title_snapshot"] == product["title"]
+
+
+@pytest.mark.asyncio
+async def test_order_retry_key_and_server_price(
+    client: AsyncClient, admin_token: str, user_token: str
+):
+    _, variant = await _create_base(client, admin_token)
+    headers = {
+        "Authorization": f"Bearer {user_token}",
+        "Idempotency-Key": f"order-{uuid.uuid4()}",
+    }
+    payload = {
+        "currency": "ARS",
+        "lines": [{"variant_id": variant["id"], "quantity": 1, "unit_price": 1}],
+    }
+    first = await client.post("/api/v1/orders", json=payload, headers=headers)
+    assert first.status_code == 201, first.text
+    assert first.json()["total_amount"] == 1500
+    second = await client.post("/api/v1/orders", json=payload, headers=headers)
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == first.json()["id"]
+    changed = await client.post(
+        "/api/v1/orders",
+        json={"currency": "ARS", "lines": [{"variant_id": variant["id"], "quantity": 2}]},
+        headers=headers,
+    )
+    assert changed.status_code == 409
+    forged_total = await client.post(
+        "/api/v1/orders",
+        json={"currency": "ARS", "discount_amount": 1000, "lines": payload["lines"]},
+        headers={"Authorization": f"Bearer {user_token}"},
+    )
+    assert forged_total.status_code in (400, 422)
 
 
 @pytest.mark.asyncio
@@ -112,11 +156,16 @@ async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: 
     assert add.status_code == 200, add.text
     updated = add.json()
     assert len(updated["lines"]) == 2
-    assert updated["total_amount"] == 7500.0
+    assert updated["total_amount"] == 6000.0
 
     pay = await client.post(
         f"/api/v1/orders/{order['id']}/pay",
         headers={"Authorization": f"Bearer {user_token}"},
+    )
+    assert pay.status_code == 403
+    pay = await client.post(
+        f"/api/v1/orders/{order['id']}/pay",
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert pay.status_code == 200, pay.text
     paid = pay.json()
@@ -124,6 +173,25 @@ async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: 
     assert paid["payment_status"] == "approved"
     assert paid["shipping_status"] == "pending"
     assert paid["shipments"] == []
+    assert (
+        await client.post(
+            f"/api/v1/orders/{order['id']}/lines",
+            json={"variant_id": variant["id"], "quantity": 1},
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+    ).status_code == 409
+    assert (
+        await client.post(
+            f"/api/v1/orders/{order['id']}/cancel",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+    ).status_code == 409
+    assert (
+        await client.post(
+            f"/api/v1/orders/{order['id']}/pay",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 409
 
     fulfill_payload = {
         "carrier": "FastShip",
@@ -143,6 +211,12 @@ async def test_order_add_line_pay_and_fulfill(client: AsyncClient, admin_token: 
     shipment = fulfilled["shipments"][0]
     assert shipment["carrier"] == "FastShip"
     assert shipment["tracking_number"] == "TRACK-123"
+    assert (
+        await client.post(
+            f"/api/v1/orders/{order['id']}/fulfill",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 409
 
 
 @pytest.mark.asyncio
@@ -191,6 +265,12 @@ async def test_order_from_cart_flow(client: AsyncClient, admin_token: str):
     assert order["payment_status"] == "pending"
     assert len(order["lines"]) == 1
     assert order["lines"][0]["quantity"] == 2
+
+    replay = await client.post(
+        "/api/v1/orders/from-cart", json={"guest_token": guest_token}
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == order["id"]
 
     cart_after = await client.get(
         "/api/v1/cart",

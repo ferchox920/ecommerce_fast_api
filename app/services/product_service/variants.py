@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.operations import flush_async, refresh_async, rollback_async
 from app.models.product import Product, ProductVariant
+from app.services import inventory_service
+from app.services.exceptions import ServiceError
 from app.schemas.product import ProductVariantCreate, ProductVariantUpdate
 from app.schemas.variant import VariantCreate, VariantUpdate
 from .utils import as_uuid
@@ -39,6 +41,8 @@ async def add_variant(
         raise HTTPException(status_code=400, detail="stock_reserved no puede exceder stock_on_hand")
 
     payload = data.model_dump()
+    initial_on_hand = payload.pop("stock_on_hand", 0) or 0
+    initial_reserved = payload.pop("stock_reserved", 0) or 0
     payload["sku"] = payload["sku"].strip()
     if payload.get("barcode"):
         payload["barcode"] = payload["barcode"].strip()
@@ -51,6 +55,14 @@ async def add_variant(
     db.add(variant)
     try:
         await flush_async(db, variant)
+        if initial_on_hand:
+            await inventory_service.receive_stock(
+                db, variant, initial_on_hand, reason="variant:initial"
+            )
+        if initial_reserved:
+            await inventory_service.reserve_stock(
+                db, variant, initial_reserved, reason="variant:initial"
+            )
     except IntegrityError:
         await rollback_async(db)
         raise HTTPException(status_code=400, detail="SKU ya existe")
@@ -68,9 +80,16 @@ async def update_variant(
         changes = ProductVariantUpdate(**changes.model_dump(exclude_unset=True))
 
     payload = changes.model_dump(exclude_unset=True)
+    requested_on_hand = payload.pop("stock_on_hand", None)
+    requested_reserved = payload.pop("stock_reserved", None)
 
-    new_on_hand = payload.get("stock_on_hand", variant.stock_on_hand)
-    new_reserved = payload.get("stock_reserved", variant.stock_reserved)
+    if requested_reserved is not None and requested_reserved != variant.stock_reserved:
+        raise HTTPException(status_code=400, detail="Use stock reserve/release endpoints")
+    if requested_on_hand is not None:
+        await set_stock(db, variant, requested_on_hand, None)
+
+    new_on_hand = variant.stock_on_hand
+    new_reserved = variant.stock_reserved
 
     if new_on_hand is not None and new_on_hand < 0:
         raise HTTPException(status_code=400, detail="Stock no puede ser negativo")
@@ -108,16 +127,22 @@ async def set_stock(
     on_hand: int | None = None,
     reserved: int | None = None,
 ) -> ProductVariant:
+    variant = await db.get(
+        ProductVariant, variant.id, with_for_update=True, populate_existing=True
+    )
+    if reserved is not None and reserved != variant.stock_reserved:
+        raise HTTPException(status_code=400, detail="Use stock reserve/release endpoints")
     if on_hand is not None:
         if on_hand < 0:
             raise HTTPException(status_code=400, detail="Stock no puede ser negativo")
-        variant.stock_on_hand = on_hand
-    if reserved is not None:
-        if reserved < 0:
-            raise HTTPException(status_code=400, detail="Stock no puede ser negativo")
-        if reserved > (variant.stock_on_hand if on_hand is None else on_hand):
-            raise HTTPException(status_code=400, detail="stock_reserved no puede exceder stock_on_hand")
-        variant.stock_reserved = reserved
+        try:
+            delta = on_hand - variant.stock_on_hand
+            if delta:
+                await inventory_service.adjust_stock(
+                    db, variant, delta, reason="admin:set_stock"
+                )
+        except ServiceError as exc:
+            raise HTTPException(status_code=400, detail=exc.detail) from exc
 
     db.add(variant)
     await flush_async(db, variant)

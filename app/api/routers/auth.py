@@ -61,13 +61,13 @@ def _client_ip(request: Request | None) -> str | None:
 
 def _get_user_scopes(user: User) -> list[str]:
     """Centraliza la lógica de asignación de scopes según el rol del usuario."""
-    user_scopes = ["users:me", "reports:read"]
+    user_scopes = ["users:me"]
     if user.is_superuser:
         user_scopes.extend(
-            ["admin", "products:read", "products:write", "purchases:read", "purchases:write"]
+            ["admin", "products:read", "products:write", "purchases:read", "purchases:write", "reports:read"]
         )
     else:
-        user_scopes.extend(["products:read", "purchases:read"])
+        user_scopes.extend(["products:read", "purchases:read", "orders:read", "orders:write", "cart:read", "cart:write"])
     return user_scopes
 
 

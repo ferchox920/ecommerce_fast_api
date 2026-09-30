@@ -1,14 +1,9 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Boolean, Numeric, ForeignKey, DateTime, func, Integer, Text
+from sqlalchemy import String, Boolean, Numeric, ForeignKey, DateTime, func, Integer, Text, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
-from typing import TYPE_CHECKING
 
 from app.db.session import Base
-
-if TYPE_CHECKING:  # pragma: no cover
-    from app.models.inventory import InventoryMovement
-
 
 # --- Clasificación ---
 class Category(Base):
@@ -80,6 +75,13 @@ class Product(Base):
 # --- Variante (talle/color/SKU/stock) ---
 class ProductVariant(Base):
     __tablename__ = "product_variants"
+    __table_args__ = (
+        CheckConstraint("stock_on_hand >= 0", name="ck_product_variants_on_hand_nonnegative"),
+        CheckConstraint(
+            "stock_reserved >= 0 AND stock_reserved <= stock_on_hand",
+            name="ck_product_variants_reserved_within_on_hand",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id: Mapped[uuid.UUID] = mapped_column(

@@ -83,7 +83,7 @@ async def test_receive_reserve_release_sale_flow(client: AsyncClient, admin_toke
     v3 = r3.json()
     assert v3["stock_reserved"] == 4 and v3["stock_on_hand"] == 10
 
-    # sale 3 (de reservado)
+    # La venta directa consume stock libre y conserva las reservas.
     r4 = await client.post(
         f"/api/v1/products/variants/{var['id']}/stock/sale",
         json={"type": "sale", "quantity": 3, "reason": "test: sale"},
@@ -91,7 +91,7 @@ async def test_receive_reserve_release_sale_flow(client: AsyncClient, admin_toke
     )
     assert r4.status_code == 200, r4.text
     v4 = r4.json()
-    assert v4["stock_reserved"] == 1 and v4["stock_on_hand"] == 7
+    assert v4["stock_reserved"] == 4 and v4["stock_on_hand"] == 7
 
     # movimientos: validar tipos y que haya al menos los 4
     rm = await client.get(
@@ -136,3 +136,37 @@ async def test_reserve_more_than_available_fails(client: AsyncClient, admin_toke
         headers=headers
     )
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_receive_retry_key_does_not_duplicate_stock_or_audit(
+    client: AsyncClient, admin_token: str
+):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    product = await _producto_minimo(client, admin_token)
+    variant = await client.post(
+        f"/api/v1/products/{product['id']}/variants",
+        json={
+            "sku": f"IDEM-{uuid.uuid4()}", "size_label": "M", "color_name": "Black",
+            "stock_on_hand": 0,
+        },
+        headers=headers,
+    )
+    assert variant.status_code == 201, variant.text
+    variant_id = variant.json()["id"]
+    request = {
+        "type": "receive", "quantity": 2, "reason": "retry-test",
+        "idempotency_key": f"receive-{uuid.uuid4()}",
+    }
+    url = f"/api/v1/products/variants/{variant_id}/stock/receive"
+    first = await client.post(url, json=request, headers=headers)
+    second = await client.post(url, json=request, headers=headers)
+    assert first.status_code == second.status_code == 200
+    assert second.json()["stock_on_hand"] == 2
+    changed = await client.post(url, json={**request, "quantity": 3}, headers=headers)
+    assert changed.status_code == 400
+    movements = await client.get(
+        f"/api/v1/products/variants/{variant_id}/stock/movements", headers=headers
+    )
+    assert movements.status_code == 200
+    assert len(movements.json()) == 1

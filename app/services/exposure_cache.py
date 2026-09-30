@@ -5,14 +5,13 @@ from typing import Optional, Any
 import time
 import importlib
 
+from app.core.config import settings
+
 redis: Any | None
 try:
     redis = importlib.import_module("redis")
 except ImportError:  # pragma: no cover - redis optional
     redis = None
-
-from app.core.config import settings
-
 
 class ExposureCache:
     def __init__(self, ttl_seconds: int = 600) -> None:
@@ -71,5 +70,4 @@ class ExposureCache:
                 except Exception:
                     pass
             self._store.clear()
-
 

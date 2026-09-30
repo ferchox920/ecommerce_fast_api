@@ -14,23 +14,20 @@ from app.schemas.inventory_replenishment import (
     StockAlert,
 )
 from app.services.exceptions import (
+    ConflictError,
     InsufficientReservationError,
     InsufficientStockError,
     InvalidQuantityError,
 )
 
-_MOVEMENTS_READY_KEY = "inventory_movements_ready"
-
-
-async def _ensure_movements_table(db: AsyncSession) -> None:
-    if db.info.get(_MOVEMENTS_READY_KEY):
-        return
-
-    def _create_table(sync_session) -> None:
-        InventoryMovement.__table__.create(bind=sync_session.bind, checkfirst=True)
-
-    await db.run_sync(_create_table)
-    db.info[_MOVEMENTS_READY_KEY] = True
+async def _locked_variant(db: AsyncSession, variant: ProductVariant) -> ProductVariant:
+    """Reload the latest stock values while holding the row until transaction end."""
+    current = await db.get(
+        ProductVariant, variant.id, with_for_update=True, populate_existing=True
+    )
+    if current is None:
+        raise InsufficientStockError("La variante ya no existe.")
+    return current
 
 
 async def _log_movement(
@@ -39,16 +36,17 @@ async def _log_movement(
     mtype: MovementKind,
     qty: int,
     reason: str | None,
+    idempotency_key: str | None = None,
 ) -> None:
-    await _ensure_movements_table(db)
     movement = InventoryMovement(
         variant_id=variant.id,
         type=mtype,
         quantity=int(qty),
         reason=reason,
+        idempotency_key=idempotency_key,
     )
     db.add(movement)
-    await db.flush([movement])
+    await db.flush()
 
 
 async def _log_and_add_movement(
@@ -57,12 +55,54 @@ async def _log_and_add_movement(
     mtype: MovementKind,
     qty: int,
     reason: str | None,
+    idempotency_key: str | None = None,
 ) -> ProductVariant:
     """Helper para añadir la variante a la sesión y registrar el movimiento, sin commit."""
     db.add(variant)
     await db.flush([variant])
-    await _log_movement(db, variant, mtype, qty, reason)
+    await _log_movement(db, variant, mtype, qty, reason, idempotency_key)
     return variant
+
+
+async def _already_applied(
+    db: AsyncSession,
+    variant: ProductVariant,
+    kind: MovementKind,
+    quantity: int,
+    reason: str | None,
+    idempotency_key: str | None,
+) -> bool:
+    if not idempotency_key:
+        return False
+    prior = await db.scalar(
+        select(InventoryMovement).where(
+            InventoryMovement.variant_id == variant.id,
+            InventoryMovement.idempotency_key == idempotency_key,
+        )
+    )
+    if prior is None:
+        return False
+    if prior.type != kind or prior.quantity != quantity or prior.reason != reason:
+        raise ConflictError("Idempotency key was used for a different stock operation.")
+    return True
+
+
+async def _outstanding_order_reservation(
+    db: AsyncSession, variant: ProductVariant, reason: str
+) -> int:
+    rows = await db.scalars(
+        select(InventoryMovement).where(
+            InventoryMovement.variant_id == variant.id,
+            InventoryMovement.reason == reason,
+            InventoryMovement.type.in_(
+                [MovementKind.RESERVE, MovementKind.RELEASE, MovementKind.SALE]
+            ),
+        )
+    )
+    return sum(
+        movement.quantity if movement.type == MovementKind.RESERVE else -movement.quantity
+        for movement in rows
+    )
 
 
 async def receive_stock(
@@ -70,11 +110,15 @@ async def receive_stock(
     variant: ProductVariant,
     quantity: int,
     reason: str | None = None,
+    idempotency_key: str | None = None,
 ) -> ProductVariant:
     if quantity <= 0:
         raise InvalidQuantityError("La cantidad debe ser mayor que 0.")
+    variant = await _locked_variant(db, variant)
+    if await _already_applied(db, variant, MovementKind.RECEIVE, quantity, reason, idempotency_key):
+        return variant
     variant.stock_on_hand += quantity
-    return await _log_and_add_movement(db, variant, MovementKind.RECEIVE, quantity, reason)
+    return await _log_and_add_movement(db, variant, MovementKind.RECEIVE, quantity, reason, idempotency_key)
 
 
 async def adjust_stock(
@@ -82,12 +126,18 @@ async def adjust_stock(
     variant: ProductVariant,
     quantity: int,
     reason: str | None = None,
+    idempotency_key: str | None = None,
 ) -> ProductVariant:
+    variant = await _locked_variant(db, variant)
+    if await _already_applied(db, variant, MovementKind.ADJUST, quantity, reason, idempotency_key):
+        return variant
     new_on_hand = variant.stock_on_hand + quantity
     if new_on_hand < 0:
         raise InsufficientStockError("El stock no puede quedar en negativo.")
+    if new_on_hand < variant.stock_reserved:
+        raise InsufficientStockError("El ajuste no puede consumir stock reservado.")
     variant.stock_on_hand = new_on_hand
-    return await _log_and_add_movement(db, variant, MovementKind.ADJUST, abs(quantity), reason)
+    return await _log_and_add_movement(db, variant, MovementKind.ADJUST, quantity, reason, idempotency_key)
 
 
 async def reserve_stock(
@@ -95,13 +145,17 @@ async def reserve_stock(
     variant: ProductVariant,
     quantity: int,
     reason: str | None = None,
+    idempotency_key: str | None = None,
 ) -> ProductVariant:
     if quantity <= 0:
         raise InvalidQuantityError("La cantidad debe ser mayor que 0.")
+    variant = await _locked_variant(db, variant)
+    if await _already_applied(db, variant, MovementKind.RESERVE, quantity, reason, idempotency_key):
+        return variant
     if variant.stock_reserved + quantity > variant.stock_on_hand:
         raise InsufficientStockError("No hay stock disponible suficiente para reservar la cantidad solicitada.")
     variant.stock_reserved += quantity
-    return await _log_and_add_movement(db, variant, MovementKind.RESERVE, quantity, reason)
+    return await _log_and_add_movement(db, variant, MovementKind.RESERVE, quantity, reason, idempotency_key)
 
 
 async def release_stock(
@@ -109,13 +163,20 @@ async def release_stock(
     variant: ProductVariant,
     quantity: int,
     reason: str | None = None,
+    idempotency_key: str | None = None,
 ) -> ProductVariant:
     if quantity <= 0:
         raise InvalidQuantityError("La cantidad debe ser mayor que 0.")
+    variant = await _locked_variant(db, variant)
+    if await _already_applied(db, variant, MovementKind.RELEASE, quantity, reason, idempotency_key):
+        return variant
+    if reason and reason.startswith("order:"):
+        if quantity > await _outstanding_order_reservation(db, variant, reason):
+            raise InsufficientReservationError("Order does not own this reservation.")
     if quantity > variant.stock_reserved:
         raise InsufficientReservationError("No se puede liberar más stock del que está reservado.")
     variant.stock_reserved -= quantity
-    return await _log_and_add_movement(db, variant, MovementKind.RELEASE, quantity, reason)
+    return await _log_and_add_movement(db, variant, MovementKind.RELEASE, quantity, reason, idempotency_key)
 
 
 async def commit_sale(
@@ -123,21 +184,32 @@ async def commit_sale(
     variant: ProductVariant,
     quantity: int,
     reason: str | None = None,
+    idempotency_key: str | None = None,
 ) -> ProductVariant:
     if quantity <= 0:
         raise InvalidQuantityError("La cantidad debe ser mayor que 0.")
+    variant = await _locked_variant(db, variant)
+    if await _already_applied(db, variant, MovementKind.SALE, quantity, reason, idempotency_key):
+        return variant
 
     if quantity > variant.stock_on_hand:
         raise InsufficientStockError("No hay stock disponible suficiente para la venta.")
 
-    consume_reserved = min(quantity, variant.stock_reserved)
+    if reason and reason.startswith("order:"):
+        if quantity > await _outstanding_order_reservation(db, variant, reason):
+            raise InsufficientReservationError("Order does not own this reservation.")
+        consume_reserved = quantity
+    else:
+        if quantity > variant.stock_on_hand - variant.stock_reserved:
+            raise InsufficientStockError("Reserved stock is not available for a direct sale.")
+        consume_reserved = 0
     variant.stock_reserved -= consume_reserved
     variant.stock_on_hand -= quantity
 
     if variant.stock_on_hand < 0:
         raise InsufficientStockError("El stock no puede quedar en negativo.")
 
-    return await _log_and_add_movement(db, variant, MovementKind.SALE, quantity, reason)
+    return await _log_and_add_movement(db, variant, MovementKind.SALE, quantity, reason, idempotency_key)
 
 
 async def list_movements(
@@ -146,7 +218,6 @@ async def list_movements(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
-    await _ensure_movements_table(db)
     stmt = (
         select(InventoryMovement)
         .where(InventoryMovement.variant_id == variant.id)

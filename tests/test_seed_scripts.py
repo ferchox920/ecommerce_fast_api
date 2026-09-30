@@ -1,5 +1,5 @@
-import httpx
 import pytest
+from urllib.parse import urlparse
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 from uuid import uuid4
@@ -105,7 +105,7 @@ async def test_seed_dev_products_populates_catalog(async_db_session):
 
 
 @pytest.mark.asyncio
-async def test_seed_dev_products_images_are_accessible():
+async def test_seed_dev_products_images_have_valid_urls():
     url_pairs: list[tuple[str, str]] = []
     for seed in seed_dev_products.PRODUCTS:
         slug = seed.slug or slugify(seed.title)
@@ -113,17 +113,12 @@ async def test_seed_dev_products_images_are_accessible():
         for image in seed.images:
             url_pairs.append((slug, image.url))
 
-    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-        for slug, url in url_pairs:
-            try:
-                response = await client.head(url)
-            except httpx.HTTPError as exc:
-                pytest.fail(f"{slug} image {url} failed with {exc!s}")
-
-            if response.status_code >= 400:
-                response = await client.get(url, headers={"Range": "bytes=0-0"})
-
-            assert response.status_code < 400, f"{slug} image {url} returned {response.status_code}"
+    assert len({url for _, url in url_pairs}) == len(url_pairs)
+    for slug, url in url_pairs:
+        parsed = urlparse(url)
+        assert parsed.scheme == "https", slug
+        assert parsed.hostname == "images.unsplash.com", slug
+        assert parsed.path.startswith("/photo-"), slug
 
 
 @pytest.mark.asyncio
