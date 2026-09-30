@@ -4,7 +4,7 @@ amqp==5.4.0
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
-asyncpg==0.30.0
+asyncpg==0.31.0
 bcrypt==4.3.0
 billiard==4.3.0
 celery==5.5.3
